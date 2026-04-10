@@ -32,7 +32,7 @@ init_scope() {
     fi
   else
     # Default: target domain + subdomains
-    local escaped; escaped=$(echo "$_SCOPE_DOMAIN" | sed 's/\./\\./g')
+    local escaped="${_SCOPE_DOMAIN//./\\.}"
     _SCOPE_PATTERNS+=("(^|\\.)${escaped}$")
   fi
 }

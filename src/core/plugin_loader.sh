@@ -94,11 +94,12 @@ run_hook() {
       {
         jq -r '.[]' "$main_findings" 2>/dev/null || true
         cat "$plugin_findings"
-      } | jq -s '.' > "$merged" 2>/dev/null && mv "$merged" "$main_findings" || rm -f "$merged"
+      } | jq -s '.' > "$merged" 2>/dev/null
+      if [[ -f "$merged" ]]; then mv "$merged" "$main_findings"; else rm -f "$merged"; fi
     else
       jq -s '.' "$plugin_findings" > "$main_findings" 2>/dev/null || true
     fi
-    > "$plugin_findings"
+    : > "$plugin_findings"
   fi
 }
 

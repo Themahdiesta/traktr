@@ -13,7 +13,7 @@ BURP_HOST=""
 BURP_BODY=""
 BURP_BODY_TYPE="none"          # none|form|json|xml|multipart
 BURP_AUTH_TYPE="none"          # none|cookie|bearer|basic|custom
-BURP_CURL_BASE=""
+export BURP_CURL_BASE=""
 BURP_IS_API=false
 BURP_CSRF_FIELD=""
 BURP_CSRF_VALUE=""
@@ -32,7 +32,7 @@ parse_burp_request() {
   BURP_BODY=""; BURP_BODY_TYPE="none"; BURP_AUTH_TYPE="none"
   BURP_IS_API=false; BURP_CSRF_FIELD=""; BURP_CSRF_VALUE=""
 
-  local line_num=0 in_body=false request_line="" body_lines=""
+  local line_num=0 in_body=false body_lines=""
 
   # Normalize line endings (Burp on Windows uses \r\n)
   local clean_file; clean_file=$(mktemp)
@@ -43,10 +43,9 @@ parse_burp_request() {
 
     # Line 1: Request line (METHOD PATH HTTP/x.x)
     if [[ $line_num -eq 1 ]]; then
-      request_line="$line"
       BURP_METHOD=$(echo "$line" | awk '{print $1}')
       local full_path; full_path=$(echo "$line" | awk '{print $2}')
-      BURP_HTTP_VER=$(echo "$line" | awk '{print $3}')
+      export BURP_HTTP_VER; BURP_HTTP_VER=$(echo "$line" | awk '{print $3}')
       # Split path and query string
       BURP_PATH="${full_path%%\?*}"
       if [[ "$full_path" == *"?"* ]]; then
@@ -75,9 +74,10 @@ parse_burp_request() {
 
     # Handle multiline headers (continuation line starts with space/tab)
     if [[ "$line" =~ ^[[:space:]] ]] && [[ ${#BURP_HEADERS[@]} -gt 0 ]]; then
-      local last_key="${!BURP_HEADERS[@]}"
-      last_key=$(echo "$last_key" | awk '{print $NF}')
-      BURP_HEADERS["$last_key"]+=" $(echo "$line" | sed 's/^[[:space:]]*//')"
+      local _keys=("${!BURP_HEADERS[@]}")
+      local last_key="${_keys[${#_keys[@]}-1]}"
+      local _trimmed="${line#"${line%%[! ]*}"}"
+      BURP_HEADERS["$last_key"]+=" ${_trimmed}"
       continue
     fi
 
@@ -163,7 +163,7 @@ _parse_cookies() {
   local cookie_str="$1"
   IFS=';' read -ra cookies <<< "$cookie_str"
   for c in "${cookies[@]}"; do
-    c=$(echo "$c" | sed 's/^[[:space:]]*//')
+    c="${c#"${c%%[! ]*}"}"
     local name="${c%%=*}"
     local value="${c#*=}"
     [[ -n "$name" ]] && BURP_COOKIES["$name"]="$value"

@@ -24,7 +24,7 @@ done
 # ── Helpers ──────────────────────────────────────────────────────────────────
 mkdir -p "${TRAKTR_ROOT}/logs" "${TRAKTR_HOME}/payloads"
 
-log()  { local msg="[$(date '+%H:%M:%S')] $1"; echo "$msg" | tee -a "$LOG_FILE"; }
+log()  { local msg; msg="[$(date '+%H:%M:%S')] $1"; echo "$msg" | tee -a "$LOG_FILE"; }
 ok()   { log "  [+] $1"; }
 warn() { log "  [!] $1"; }
 fail() { log "  [-] $1"; }
@@ -92,7 +92,7 @@ install_system_deps() {
     else
       log "  [~] Installing $dep..."
       if $DRY_RUN; then log "  [DRY-RUN] $PKG_INSTALL $dep"
-      elif retry 2 $PKG_INSTALL "$dep"; then ok "$dep installed"; ((INSTALLED++)) || true
+      elif retry 2 "$PKG_INSTALL" "$dep"; then ok "$dep installed"; ((INSTALLED++)) || true
       else fail "$dep FAILED"; ((FAILED++)) || true
       fi
     fi
@@ -125,9 +125,11 @@ install_go() {
   rm -f "/tmp/$tarball"
   # Ensure PATH includes go binary dirs
   export PATH="/usr/local/go/bin:${HOME}/go/bin:$PATH"
+  # shellcheck disable=SC2016
   if ! grep -q '/usr/local/go/bin' "${HOME}/.bashrc" 2>/dev/null; then
     echo 'export PATH="/usr/local/go/bin:${HOME}/go/bin:$PATH"' >> "${HOME}/.bashrc"
   fi
+  # shellcheck disable=SC2016
   if ! grep -q '/usr/local/go/bin' "${HOME}/.zshrc" 2>/dev/null; then
     echo 'export PATH="/usr/local/go/bin:${HOME}/go/bin:$PATH"' >> "${HOME}/.zshrc"
   fi
@@ -153,7 +155,7 @@ install_go_tools() {
     # httpx: Kali ships Python httpx at /usr/bin/httpx; we need ProjectDiscovery's Go version
     if [[ "$tool" == "httpx" ]] && has_tool httpx && ! httpx -version 2>&1 | grep -qi 'projectdiscovery\|current'; then
       log "  [~] /usr/bin/httpx is Python httpx, installing PD httpx to ~/go/bin..."
-      retry 3 go install -v "${GO_TOOLS[$tool]}" && ok "httpx (PD) installed to ~/go/bin" && ((INSTALLED++)) || { fail "httpx FAILED"; ((FAILED++)); }
+      if retry 3 go install -v "${GO_TOOLS[$tool]}"; then ok "httpx (PD) installed to ~/go/bin"; ((INSTALLED++)) || true; else fail "httpx FAILED"; ((FAILED++)) || true; fi
       continue
     fi
     tool_install "$tool" "$tool" go install -v "${GO_TOOLS[$tool]}"

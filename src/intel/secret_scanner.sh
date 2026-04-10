@@ -118,13 +118,16 @@ scan_secrets() {
 
   # ── Additional: scan HTML comments for leaked info ──
   for resp_file in "${scan_files[@]}"; do
-    grep -oP '<!--[\s\S]{5,500}?-->' "$resp_file" 2>/dev/null | \
+    local _comments
+    _comments=$(grep -oP '<!--[\s\S]{5,500}?-->' "$resp_file" 2>/dev/null | \
       grep -iP 'password|secret|key|token|api|admin|config|debug|todo|fixme|hack|credential|internal' | \
-      head -10 | while IFS= read -r comment; do
-        local safe_comment; safe_comment=$(echo "$comment" | head -c 150 | sed 's/"/\\"/g')
-        echo "{\"type\":\"html_comment_leak\",\"value_redacted\":\"$(echo "$comment" | head -c 40 | sed 's/"/\\"/g')...\",\"location\":\"$(basename "$resp_file")\",\"confidence\":\"POSSIBLE\",\"context\":\"${safe_comment}\"}" >> "$tmpfindings"
-        ((secrets_found++)) || true
-      done
+      head -10) || true
+    [[ -z "$_comments" ]] && continue
+    while IFS= read -r comment; do
+      local safe_comment; safe_comment=$(echo "$comment" | head -c 150 | sed 's/"/\\"/g')
+      echo "{\"type\":\"html_comment_leak\",\"value_redacted\":\"$(echo "$comment" | head -c 40 | sed 's/"/\\"/g')...\",\"location\":\"$(basename "$resp_file")\",\"confidence\":\"POSSIBLE\",\"context\":\"${safe_comment}\"}" >> "$tmpfindings"
+      ((secrets_found++)) || true
+    done <<< "$_comments"
   done
 
   # ── Build JSON output ──

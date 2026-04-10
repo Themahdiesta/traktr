@@ -12,7 +12,7 @@ detect_framework() {
 
   # Header-based detection (most reliable)
   local powered; powered=$(echo "$headers" | grep -oiP 'x-powered-by:\s*\K.*' | head -1 | xargs) || true
-  local server; server=$(echo "$headers" | grep -oiP 'server:\s*\K.*' | head -1 | xargs) || true
+  local _server; _server=$(echo "$headers" | grep -oiP 'server:\s*\K.*' | head -1 | xargs) || true
   local cookies; cookies=$(echo "$headers" | grep -oi 'set-cookie:.*') || true
 
   # PHP frameworks
@@ -117,7 +117,7 @@ declare -gA VULN_SIGNATURES=(
 )
 
 validate_finding() {
-  local url="$1" param="$2" vuln_type="$3"
+  local url="$1" _param="$2" vuln_type="$3"
   local resp_file="$4" baseline_file="$5"
   local resp_status="${6:-200}" baseline_status="${7:-200}"
   local resp_time="${8:-0}" baseline_time="${9:-0}"
@@ -185,7 +185,7 @@ validate_finding() {
 #  NEXT STEP SUGGESTIONS (vuln chaining)
 # ═══════════════════════════════════════════════════════════════════════════
 suggest_next_step() {
-  local vuln_type="$1" framework="${2:-generic}" detail="${3:-}"
+  local vuln_type="$1" framework="${2:-generic}" _detail="${3:-}"
 
   case "$vuln_type" in
     lfi)

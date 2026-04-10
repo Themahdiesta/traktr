@@ -111,9 +111,10 @@ normalize_url() {
   local url="$1"
   # Lowercase scheme and host
   local scheme; scheme=$(echo "$url" | grep -oP '^https?' | tr '[:upper:]' '[:lower:]')
-  local rest; rest=$(echo "$url" | sed 's|^https\?://||')
-  local host; host=$(echo "$rest" | cut -d/ -f1 | tr '[:upper:]' '[:lower:]')
-  local path; path=$(echo "$rest" | sed 's|^[^/]*||')
+  local rest="${url#*://}"
+  local host; host=$(echo "${rest%%/*}" | tr '[:upper:]' '[:lower:]')
+  local path="/${rest#*/}"
+  [[ "$rest" != *"/"* ]] && path=""
   # Strip fragment
   path="${path%%#*}"
   # Sort query params

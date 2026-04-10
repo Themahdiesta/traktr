@@ -21,7 +21,7 @@ mine_params() {
 
   # ── SOURCE 0: Extract params from already-crawled URLs ──
   (
-    > "${outdir}/params_crawled.txt"
+    : > "${outdir}/params_crawled.txt"
     cat "$endpoints_file" "${outdir}/all_endpoints.txt" 2>/dev/null | \
       grep '?' | sort -u | while IFS= read -r crawled_url; do
         local base="${crawled_url%%\?*}"
@@ -37,7 +37,7 @@ mine_params() {
   # ── SOURCE 1: Arjun active brute ──
   if command -v arjun &>/dev/null; then
     (
-      > "${outdir}/params_arjun.txt"
+      : > "${outdir}/params_arjun.txt"
       # Prioritize pages with extensions (.php, .asp, .jsp) or query strings
       # These are real endpoints, not directory brute-force noise
       {
@@ -58,7 +58,7 @@ mine_params() {
 
   # ── SOURCE 2: HTML form extraction ──
   (
-    > "${outdir}/params_html.txt"
+    : > "${outdir}/params_html.txt"
     while IFS= read -r url; do
       local body; body=$(_curl "$url" 2>/dev/null) || continue
 
@@ -119,7 +119,7 @@ mine_params() {
 
   # ── SOURCE 3: JS static analysis ──
   (
-    > "${outdir}/params_js.txt"
+    : > "${outdir}/params_js.txt"
     local target_base; target_base=$(echo "${TARGET:-}" | grep -oP 'https?://[^/]+') || true
     grep -hiE '\.js(\?|$|#)' "$endpoints_file" 2>/dev/null | grep -v '\.json' | sort -u | head -100 | \
     while IFS= read -r js_url; do
@@ -131,6 +131,7 @@ mine_params() {
       echo "$js" > "${outdir}/responses/js_${safe}.txt" 2>/dev/null || true
 
       # fetch/axios/XHR → API endpoints + params
+      # shellcheck disable=SC2016
       echo "$js" | grep -oP '(?:fetch|axios[^(]*|\.open)\s*\(\s*["\x27`]([^"\x27`\s]{3,})' | \
         grep -oP '["\x27`]\K[^"\x27`]+' | while IFS= read -r path; do
           [[ "$path" == /* ]] && [[ -n "$target_base" ]] && echo "${target_base}${path}" >> "$endpoints_file"
@@ -172,7 +173,7 @@ mine_params() {
 
   # ── SOURCE 4: Historical params ──
   (
-    > "${outdir}/params_historical.txt"
+    : > "${outdir}/params_historical.txt"
     {
       cat "${outdir}/crawl/gau.txt" 2>/dev/null
       cat "${outdir}/crawl/wayback.txt" 2>/dev/null
@@ -193,7 +194,7 @@ mine_params() {
   local wordlist="$root/wordlists/params_common.txt"
   if [[ -f "$wordlist" ]]; then
     (
-      > "${outdir}/params_wordlist.txt"
+      : > "${outdir}/params_wordlist.txt"
       # Pick real page endpoints (with extensions), not directory brute noise
       {
         grep -iE '\.(php|asp|aspx|jsp|do|action|cgi|pl)(\?|$)' "$endpoints_file" 2>/dev/null
@@ -243,7 +244,7 @@ _merge_and_score_params() {
     grep -v '^$' > "$tmpfile" 2>/dev/null || true
 
   # Deduplicate by base_url + param name, count sources
-  > "$merged"
+  : > "$merged"
   declare -A _seen_params=()
   declare -A _param_sources=()
   declare -A _param_lines=()
@@ -278,8 +279,8 @@ _merge_and_score_params() {
   rm -f "$tmpfile"
 
   # ── Tag special params (match on param field, second pipe-delimited column) ──
-  > "${outdir}/lfi_candidates.txt"
-  > "${outdir}/redirect_candidates.txt"
+  : > "${outdir}/lfi_candidates.txt"
+  : > "${outdir}/redirect_candidates.txt"
   while IFS='|' read -r url param rest; do
     [[ -z "$param" ]] && continue
     local lp; lp=$(echo "$param" | tr '[:upper:]' '[:lower:]')

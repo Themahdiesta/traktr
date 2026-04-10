@@ -28,9 +28,11 @@ REQUEST_COUNT=0
 source "${TRAKTR_ROOT}/src/core/request_parser.sh"
 source "${TRAKTR_ROOT}/src/intel/brain.sh"
 # Phase 3 modules (sourced when available, graceful skip if still placeholder)
+# shellcheck disable=SC1090
 for _mod in lfi_engine param_miner secret_scanner; do
   [[ -f "${TRAKTR_ROOT}/src/intel/${_mod}.sh" ]] && source "${TRAKTR_ROOT}/src/intel/${_mod}.sh" 2>/dev/null || true
 done
+# shellcheck disable=SC1090
 for _mod in scope_guard helpers reporter; do
   [[ -f "${TRAKTR_ROOT}/src/utils/${_mod}.sh" ]] && source "${TRAKTR_ROOT}/src/utils/${_mod}.sh" 2>/dev/null || true
 done
@@ -196,7 +198,7 @@ _parse_flags() {
       --quiet)         QUIET=true; shift ;;
       --debug)         DEBUG=true; shift ;;
       --resume)        RESUME_FILE="$2"; shift 2 ;;
-      --dry-run)       DRY_RUN=true; shift ;;
+      --dry-run)       export DRY_RUN=true; shift ;;
       -h|--help)       _usage; exit 0 ;;
       -V|--version)    echo "traktr $TRAKTR_VERSION"; exit 0 ;;
       -*)              _die "Unknown flag: $1 (try --help)" ;;
@@ -544,10 +546,23 @@ step2_crawl() {
     pids+=($!)
   fi
 
-  # Wait for all crawlers
-  _log "  Waiting for ${#pids[@]} crawlers..."
+  # Wait for all crawlers with a master deadline (4 minutes max)
+  local crawl_deadline=$(( $(date +%s) + 240 ))
+  _log "  Waiting for ${#pids[@]} crawlers (max 4 min)..."
   _spin "Running ${#pids[@]} crawlers in parallel (katana, ffuf, gau, wayback)..."
-  for pid in "${pids[@]}"; do wait "$pid" 2>/dev/null || true; done
+  for pid in "${pids[@]}"; do
+    while kill -0 "$pid" 2>/dev/null; do
+      if [[ $(date +%s) -ge $crawl_deadline ]]; then
+        _debug "Crawl deadline reached, killing remaining crawlers"
+        for kpid in "${pids[@]}"; do kill "$kpid" 2>/dev/null || true; done
+        sleep 1
+        for kpid in "${pids[@]}"; do kill -9 "$kpid" 2>/dev/null || true; done
+        break 2
+      fi
+      sleep 1
+    done
+    wait "$pid" 2>/dev/null || true
+  done
   _spin_stop
 
   # ── HTML link extraction (lightweight spider from index page) ──
@@ -657,7 +672,7 @@ step3_probe() {
   else
     # Fallback: curl-based probing
     _log "  PD httpx not available, using curl probe"
-    > "${OUTDIR}/probed.json"
+    : > "${OUTDIR}/probed.json"
     while IFS= read -r url; do
       local result
       result=$(_curl "$url" -o /dev/null -w '{"url":"%{url_effective}","status_code":%{http_code},"content_length":%{size_download},"time_total":%{time_total}}' 2>/dev/null) || continue
@@ -737,7 +752,7 @@ step4_params() {
   if command -v arjun &>/dev/null; then
     _debug "Launching arjun"
     (
-      > "${OUTDIR}/params_arjun.txt"
+      : > "${OUTDIR}/params_arjun.txt"
       # Prioritize .php/.asp pages, limit to 5 targets to save time
       { grep -iE '\.(php|asp|aspx|jsp|do|action|cgi)(\?|$)' "$probed" 2>/dev/null; head -5 "$probed"; } | sort -u | head -5 | while IFS= read -r url; do
         local result; result=$(timeout 60 arjun -u "$url" -t 10 --stable 2>/dev/null) || continue
@@ -760,7 +775,7 @@ step4_params() {
   # ── SOURCE 2: HTML form + hidden field extraction ──
   (
     _debug "Extracting HTML form params"
-    > "${OUTDIR}/params_html.txt"
+    : > "${OUTDIR}/params_html.txt"
     while IFS= read -r url; do
       local body; body=$(_curl "$url" 2>/dev/null) || continue
 
@@ -809,7 +824,7 @@ step4_params() {
   # ── SOURCE 3: JS static analysis ──
   (
     _debug "Analyzing JavaScript files for params + API endpoints"
-    > "${OUTDIR}/params_js.txt"
+    : > "${OUTDIR}/params_js.txt"
     # Collect JS URLs
     grep -hiE '\.js(\?|$|#)' "${OUTDIR}/all_endpoints.txt" 2>/dev/null | \
       grep -v '\.json' | sort -u | head -100 | \
@@ -821,6 +836,7 @@ step4_params() {
       echo "$js" > "${OUTDIR}/responses/js_${safe_name}.txt"
 
       # fetch/axios/XHR URL patterns → extract API endpoints + params
+      # shellcheck disable=SC2016
       echo "$js" | grep -oP '(?:fetch|axios[^(]*|\.open)\s*\(\s*["\x27`]([^"\x27`]+)' | \
         grep -oP '["\x27`]\K[^"\x27`]+' | while IFS= read -r path; do
           # New endpoint
@@ -878,9 +894,22 @@ step4_params() {
     export_params_to_file "${OUTDIR}/params_burp.txt"
   fi
 
-  # Wait for all param sources
-  _log "  Waiting for ${#pids[@]} param discovery sources..."
-  for pid in "${pids[@]}"; do wait "$pid" 2>/dev/null || true; done
+  # Wait for all param sources with master deadline (4 minutes max)
+  local param_deadline=$(( $(date +%s) + 240 ))
+  _log "  Waiting for ${#pids[@]} param discovery sources (max 4 min)..."
+  for pid in "${pids[@]}"; do
+    while kill -0 "$pid" 2>/dev/null; do
+      if [[ $(date +%s) -ge $param_deadline ]]; then
+        _debug "Param deadline reached, killing remaining sources"
+        for kpid in "${pids[@]}"; do kill "$kpid" 2>/dev/null || true; done
+        sleep 1
+        for kpid in "${pids[@]}"; do kill -9 "$kpid" 2>/dev/null || true; done
+        break 2
+      fi
+      sleep 1
+    done
+    wait "$pid" 2>/dev/null || true
+  done
 
   # ── MERGE + DEDUPE ──
   _log "  Merging parameters..."
@@ -909,7 +938,7 @@ step4_params() {
     printf '\n' >&2
     printf '  \033[1;36m%-50s %-15s %-8s %s\033[0m\n' "ENDPOINT" "PARAM" "METHOD" "SOURCE" >&2
     printf '  \033[2m%-50s %-15s %-8s %s\033[0m\n' "$(printf '%.0s─' {1..50})" "$(printf '%.0s─' {1..15})" "$(printf '%.0s─' {1..8})" "$(printf '%.0s─' {1..10})" >&2
-    while IFS='|' read -r url param source method extra _; do
+    while IFS='|' read -r url param source method _ _; do
       local short_url="${url#http*://}"
       [[ ${#short_url} -gt 48 ]] && short_url="${short_url:0:45}..."
       local tag=""
@@ -951,7 +980,7 @@ step4_5_secrets() {
 
   local secrets_found=0
   local secrets_file="${OUTDIR}/secrets.json"
-  > "$secrets_file"
+  : > "$secrets_file"
 
   # Fetch JS files for scanning (if not already fetched in step 4)
   grep -hiE '\.js(\?|$)' "${OUTDIR}/all_endpoints.txt" 2>/dev/null | \
@@ -1111,7 +1140,7 @@ step5_vuln_test() {
   if [[ -s "${OUTDIR}/redirect_candidates.txt" ]]; then
     _debug "Testing open redirects"
     (
-      > "${OUTDIR}/vuln/redirects.json"
+      : > "${OUTDIR}/vuln/redirects.json"
       local payloads=("https://evil.com" "//evil.com" "/\\\\evil.com" "//evil%00.com" "https:evil.com")
       while IFS='|' read -r url param _ method _; do
         [[ -z "$url" ]] || [[ -z "$param" ]] && continue
@@ -1135,11 +1164,11 @@ step5_vuln_test() {
   if [[ -s "${OUTDIR}/active_params.txt" ]]; then
     local ssrf_keywords='url|uri|href|src|dest|redirect|link|fetch|proxy|target|site|path|domain|host|callback|api_url|endpoint|webhook|feed|resource'
     local ssrf_candidates; ssrf_candidates=$(mktemp)
-    grep -iE "$(echo "$ssrf_keywords" | sed 's/|/\\|/g')" "${OUTDIR}/active_params.txt" > "$ssrf_candidates" 2>/dev/null || true
+    grep -iE "${ssrf_keywords}" "${OUTDIR}/active_params.txt" > "$ssrf_candidates" 2>/dev/null || true
     if [[ -s "$ssrf_candidates" ]]; then
       _tool_cmd "ssrf-detect" "SSRF testing ($(wc -l < "$ssrf_candidates") candidates)"
       (
-        > "${OUTDIR}/vuln/ssrf.json"
+        : > "${OUTDIR}/vuln/ssrf.json"
         local ssrf_payloads=("http://127.0.0.1" "http://localhost" "http://[::1]" "http://0x7f000001" "http://2130706433" "http://127.1" "http://0177.0.0.1")
         while IFS='|' read -r url param _ method _; do
           [[ -z "$url" ]] || [[ -z "$param" ]] && continue
@@ -1166,7 +1195,7 @@ step5_vuln_test() {
   if [[ -s "${OUTDIR}/active_params.txt" ]]; then
     _tool_cmd "sqli-detect" "SQL injection error-based detection"
     (
-      > "${OUTDIR}/vuln/sqli.json"
+      : > "${OUTDIR}/vuln/sqli.json"
       local sqli_payloads=("'" "1' OR '1'='1" "1 AND 1=1" "1 UNION SELECT NULL--" "1; WAITFOR DELAY '0:0:1'--")
       local sqli_sigs='SQL syntax|mysql_|ORA-|PG::|SQLITE_|ODBC|syntax error|unclosed quotation|unterminated|sql error|database error|query failed|division by zero'
       while IFS='|' read -r url param _ method _; do
@@ -1187,10 +1216,23 @@ step5_vuln_test() {
     pids+=($!)
   fi
 
-  # Wait for all scanners
-  _log "  Waiting for ${#pids[@]} vuln scanners..."
+  # Wait for all scanners with master deadline (5 minutes max)
+  local vuln_deadline=$(( $(date +%s) + 300 ))
+  _log "  Waiting for ${#pids[@]} vuln scanners (max 5 min)..."
   _spin "Running ${#pids[@]} scanners in parallel (nuclei, LFI, XSS, SQLi, SSRF, commix)..."
-  for pid in "${pids[@]}"; do wait "$pid" 2>/dev/null || true; done
+  for pid in "${pids[@]}"; do
+    while kill -0 "$pid" 2>/dev/null; do
+      if [[ $(date +%s) -ge $vuln_deadline ]]; then
+        _debug "Vuln deadline reached, killing remaining scanners"
+        for kpid in "${pids[@]}"; do kill "$kpid" 2>/dev/null || true; done
+        sleep 1
+        for kpid in "${pids[@]}"; do kill -9 "$kpid" 2>/dev/null || true; done
+        break 2
+      fi
+      sleep 1
+    done
+    wait "$pid" 2>/dev/null || true
+  done
   _spin_stop
 
   # ── MERGE FINDINGS ──
