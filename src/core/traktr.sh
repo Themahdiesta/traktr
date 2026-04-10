@@ -491,8 +491,9 @@ step2_crawl() {
     local ffuf_rate_flag=()
     [[ "$RATE_LIMIT" -gt 0 ]] && ffuf_rate_flag+=(-rate "$RATE_LIMIT")
     (
+      # -ac = auto-calibrate: filters out catch-all responses (try_files fallbacks)
       ffuf -u "${TARGET}/FUZZ" -w "$wordlist" \
-        -mc 200,201,301,302,307,401,403,500 \
+        -mc 200,201,301,302,307,401,403,500 -ac \
         -t 10 -s "${ffuf_rate_flag[@]+"${ffuf_rate_flag[@]}"}" \
         "${ffuf_hdrs[@]+"${ffuf_hdrs[@]}"}" 2>/dev/null | \
         while IFS= read -r word; do
@@ -616,6 +617,28 @@ step3_probe() {
       result=$(_curl "$url" -o /dev/null -w '{"url":"%{url_effective}","status_code":%{http_code},"content_length":%{size_download},"time_total":%{time_total}}' 2>/dev/null) || continue
       echo "$result" >> "${OUTDIR}/probed.json"
     done < <(head -500 "$endpoints")
+  fi
+
+  # ── Deduplicate by response content-length ──
+  # Servers with try_files return the same page for every path.
+  # Detect the baseline (most common content_length) and filter duplicates.
+  _log "  Deduplicating probe results..."
+  local baseline_cl=""
+  baseline_cl=$(jq -r 'select(.status_code == 200) | .content_length // .content_length_header // 0' \
+    "${OUTDIR}/probed.json" 2>/dev/null | sort | uniq -c | sort -rn | head -1 | awk '{print $2}') || true
+
+  if [[ -n "$baseline_cl" ]] && [[ "$baseline_cl" -gt 0 ]]; then
+    local total_200; total_200=$(jq -r 'select(.status_code == 200) | .url' "${OUTDIR}/probed.json" 2>/dev/null | wc -l || echo 0)
+    local matching_bl; matching_bl=$(jq -r "select(.status_code == 200 and (.content_length // .content_length_header // 0) == $baseline_cl) | .url" \
+      "${OUTDIR}/probed.json" 2>/dev/null | wc -l || echo 0)
+    # If >70% of 200 responses have the same content_length, it's a catch-all
+    if [[ "$total_200" -gt 10 ]] && [[ $(( matching_bl * 100 / (total_200 + 1) )) -gt 70 ]]; then
+      _log "  Detected catch-all response (size=${baseline_cl}): filtering ${matching_bl} duplicates"
+      # Keep only responses with DIFFERENT content_length (real pages)
+      jq -c "select(.status_code != 200 or (.content_length // .content_length_header // 0) != $baseline_cl)" \
+        "${OUTDIR}/probed.json" > "${OUTDIR}/probed_deduped.json" 2>/dev/null || true
+      mv "${OUTDIR}/probed_deduped.json" "${OUTDIR}/probed.json"
+    fi
   fi
 
   # Extract categorized URL lists

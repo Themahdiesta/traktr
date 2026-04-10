@@ -38,7 +38,13 @@ mine_params() {
   if command -v arjun &>/dev/null; then
     (
       > "${outdir}/params_arjun.txt"
-      head -50 "$endpoints_file" | while IFS= read -r url; do
+      # Prioritize pages with extensions (.php, .asp, .jsp) or query strings
+      # These are real endpoints, not directory brute-force noise
+      {
+        grep -iE '\.(php|asp|aspx|jsp|do|action|cgi|pl)(\?|$)' "$endpoints_file" 2>/dev/null
+        grep '\?' "$endpoints_file" 2>/dev/null | sed 's/\?.*//'
+        head -10 "$endpoints_file"
+      } | sort -u | head -20 | while IFS= read -r url; do
         local tmpout; tmpout=$(mktemp)
         timeout 60 arjun -u "$url" -t 10 --stable -oT "$tmpout" 2>/dev/null || true
         [[ -s "$tmpout" ]] && while IFS= read -r line; do
@@ -188,8 +194,11 @@ mine_params() {
   if [[ -f "$wordlist" ]]; then
     (
       > "${outdir}/params_wordlist.txt"
-      # Pick top 10 base endpoints (strip query strings to avoid false positives from existing params)
-      head -10 "$endpoints_file" | sed 's/\?.*$//' | sort -u | while IFS= read -r url; do
+      # Pick real page endpoints (with extensions), not directory brute noise
+      {
+        grep -iE '\.(php|asp|aspx|jsp|do|action|cgi|pl)(\?|$)' "$endpoints_file" 2>/dev/null
+        head -5 "$endpoints_file"
+      } | sed 's/\?.*$//' | sort -u | head -10 | while IFS= read -r url; do
         # Skip non-HTML responses (images, CSS, JS) -- they'll cause false positives
         local content_type
         content_type=$(_curl "$url" -o /dev/null -w '%{content_type}' 2>/dev/null) || continue
