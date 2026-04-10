@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# TRAKTR Smart LFI Detection Engine v1.0
+# TRAKTR Smart LFI Detection Engine v2.0
 # 6-level escalation, multi-signal validation, WAF bypass chains
 # Usage: source lfi_engine.sh; detect_lfi <url> <param> <method>
 

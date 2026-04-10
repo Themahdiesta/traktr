@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # ╔════════════════════════════════════════════════════════════════════╗
-# ║  TRAKTR v1.0 -- Intelligent Web Pentest Orchestrator             ║
+# ║  TRAKTR v2.0 -- Intelligent Web Pentest Orchestrator             ║
 # ║  Usage: traktr <target> [flags]  |  traktr -r request.txt        ║
 # ╚════════════════════════════════════════════════════════════════════╝
 set -euo pipefail
 
-TRAKTR_VERSION="1.0.0"
+TRAKTR_VERSION="2.0.0"
 TRAKTR_ROOT="${TRAKTR_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
 TRAKTR_HOME="${HOME}/.traktr"
 SCAN_START=$(date +%s)
@@ -82,6 +82,40 @@ _step_bar() {
   declare -f _progress_bar &>/dev/null && _progress_bar "$@" || true
 }
 
+# ── Process tree killer (recursive) ──────────────────────────────────────────
+_kill_tree() {
+  local pid=$1 sig=${2:-TERM}
+  local children
+  children=$(pgrep -P "$pid" 2>/dev/null) || true
+  for child in $children; do
+    _kill_tree "$child" "$sig"
+  done
+  kill "-${sig}" "$pid" 2>/dev/null || true
+}
+
+_kill_tree_hard() {
+  local pid=$1
+  _kill_tree "$pid" TERM
+  sleep 0.5
+  _kill_tree "$pid" KILL
+}
+
+# ── Global cleanup: kill ALL children on exit ────────────────────────────────
+_cleanup() {
+  local child_pids
+  child_pids=$(pgrep -P $$ 2>/dev/null) || true
+  for pid in $child_pids; do
+    _kill_tree "$pid" TERM
+  done
+  sleep 0.3
+  child_pids=$(pgrep -P $$ 2>/dev/null) || true
+  for pid in $child_pids; do
+    kill -9 "$pid" 2>/dev/null || true
+  done
+  wait 2>/dev/null || true
+}
+trap '_cleanup' EXIT
+
 _log_request() {
   ((REQUEST_COUNT++)) || true
   [[ "$OSCP" == true ]] && echo "$(date '+%Y-%m-%d %H:%M:%S') | $1 | $2" >> "${OUTDIR}/requests.log"
@@ -146,15 +180,51 @@ _curl() {
 # ── Banner ──────────────────────────────────────────────────────────────────
 _banner() {
   [[ "$QUIET" == true ]] && return
-  cat << 'EOF'
+  # Randomly pick a tractor art on each run
+  local art_idx=$(( RANDOM % 3 ))
+  cat << 'BANNEREOF'
+
   ___________              __    __
   \__    ___/___________  |  | _/  |________
     |    |  \_  __ \__  \ |  |/ \   __\_  __ \
     |    |   |  | \// __ \|    < |  |  |  | \/
     |____|   |__|  (____  |__|_ \|__|  |__|
                         \/     \/
-      Intelligent Web Pentest Orchestrator v1.0
-EOF
+BANNEREOF
+
+  case $art_idx in
+    0)
+      cat << 'ART0'
+              _______
+               |o  |   !
+   __          |:`_|---'-.
+  |__|_______.-.'_'.-----.|
+ (o)(o)------''._.'     (O)
+ART0
+      ;;
+    1)
+      cat << 'ART1'
+                       ~~
+ :::::::::          o  _||
+ :::::::::---------[|<[___]
+ :::::::::| | | |  (_)    o
+ART1
+      ;;
+    2)
+      cat << 'ART2'
+       /\  ,-,---,
+      //\\\/|\_|\_|  Y
+  ,\_//  \\|/`\ |--'-q  _
+   \_/    {( () ) {(===t||
+            \_/``````\_/  \
+ART2
+      ;;
+  esac
+
+  cat << 'TAGEOF'
+       ~ plowing the web ~
+    <3 By @mahdiesta     v2.0
+TAGEOF
 }
 
 # ── Config loader ──────────────────────────────────────────────────────────
@@ -326,8 +396,8 @@ step0_init() {
     SCOPE_PATTERN="$domain"
   fi
 
-  # Trap signals for clean shutdown
-  trap '_warn "Interrupted! Saving state..."; _save_state "interrupted"; exit 130' INT TERM
+  # Trap signals for clean shutdown (EXIT trap handles _cleanup)
+  trap '_warn "Interrupted! Saving state..."; _save_state "interrupted"; _cleanup; exit 130' INT TERM
 
   _save_state "init"
   _json_event "scan_start" "{\"target\":\"$TARGET\",\"threads\":$THREADS}"
@@ -577,9 +647,7 @@ step2_crawl() {
     while kill -0 "$pid" 2>/dev/null; do
       if [[ $(date +%s) -ge $crawl_deadline ]]; then
         _debug "Crawl deadline reached, killing remaining crawlers"
-        for kpid in "${pids[@]}"; do kill "$kpid" 2>/dev/null || true; done
-        sleep 1
-        for kpid in "${pids[@]}"; do kill -9 "$kpid" 2>/dev/null || true; done
+        for kpid in "${pids[@]}"; do _kill_tree_hard "$kpid"; done
         break 2
       fi
       sleep 1
@@ -759,21 +827,71 @@ step4_params() {
 
   # Use Phase 3 mine_params() if available (with 4-min timeout)
   if declare -f mine_params &>/dev/null; then
-    ( mine_params "${OUTDIR}/probed_urls.txt" "$OUTDIR" 2>/dev/null || true ) &
+    ( mine_params "${OUTDIR}/probed_urls.txt" "$OUTDIR" || true ) &
     local mp_pid=$!
     local mp_deadline=$(( $(date +%s) + 240 ))
     while kill -0 "$mp_pid" 2>/dev/null; do
       if [[ $(date +%s) -ge $mp_deadline ]]; then
-        _debug "Param mining deadline reached"
-        kill "$mp_pid" 2>/dev/null || true; sleep 1; kill -9 "$mp_pid" 2>/dev/null || true
+        _debug "Param mining deadline reached, killing process tree"
+        _kill_tree_hard "$mp_pid"
         break
       fi
       sleep 1
     done
     wait "$mp_pid" 2>/dev/null || true
     _spin_stop
+
+    # Merge partial results (mine_params may have been killed before its merge step)
+    local current_count
+    current_count=$(wc -l < "${OUTDIR}/active_params.txt" 2>/dev/null || echo 0)
+    if [[ "$current_count" -eq 0 ]]; then
+      _debug "Merging partial param results after deadline"
+      if declare -f _merge_and_score_params &>/dev/null; then
+        _merge_and_score_params "$OUTDIR" 2>/dev/null || true
+      else
+        # Inline merge fallback
+        cat "${OUTDIR}"/params_*.txt 2>/dev/null | \
+          sort -t'|' -k1,2 -u > "${OUTDIR}/active_params.txt" 2>/dev/null || true
+      fi
+    fi
+
+    # Tag LFI/redirect candidates (always, in case merge just ran)
+    local lfi_kw='file\|path\|page\|include\|template\|doc\|folder\|view\|load\|read\|dir\|resource\|filename\|download\|src\|conf\|log\|url\|action\|cat\|type\|content\|prefix\|require\|pg\|document\|root\|data\|board\|date\|detail\|inc\|locate\|show\|layout\|mod\|site\|img\|open\|nav\|import'
+    local lfi_short='^p$\|^f$\|^fn$\|^fp$\|^loc$\|^uri$\|^val$'
+    {
+      grep -i "$lfi_kw" "${OUTDIR}/active_params.txt" 2>/dev/null || true
+      awk -F'|' '{print tolower($2)}' "${OUTDIR}/active_params.txt" 2>/dev/null | \
+        grep -n "$lfi_short" 2>/dev/null | cut -d: -f1 | \
+        while IFS= read -r ln; do sed -n "${ln}p" "${OUTDIR}/active_params.txt"; done 2>/dev/null || true
+    } | sort -u > "${OUTDIR}/lfi_candidates.txt" 2>/dev/null || true
+
+    local redir_kw='redirect\|redir\|next\|return\|goto\|url\|callback\|continue\|dest\|destination\|target\|rurl\|forward\|out\|link\|jump'
+    grep -i "$redir_kw" "${OUTDIR}/active_params.txt" 2>/dev/null | \
+      sort -u > "${OUTDIR}/redirect_candidates.txt" 2>/dev/null || true
+
     local total; total=$(wc -l < "${OUTDIR}/active_params.txt" 2>/dev/null || echo 0)
-    _ok "Parameters discovered: $total (see ${OUTDIR}/active_params.txt)"
+    local lfi_c; lfi_c=$(wc -l < "${OUTDIR}/lfi_candidates.txt" 2>/dev/null || echo 0)
+    local redir_c; redir_c=$(wc -l < "${OUTDIR}/redirect_candidates.txt" 2>/dev/null || echo 0)
+    _ok "Parameters discovered: $total | LFI-candidates: $lfi_c | Redirect-candidates: $redir_c"
+
+    # Display parameter summary table
+    if [[ "$total" -gt 0 ]]; then
+      printf '\n' >&2
+      printf '  \033[1;36m%-50s %-15s %-8s %s\033[0m\n' "ENDPOINT" "PARAM" "METHOD" "SOURCE" >&2
+      printf '  \033[2m%-50s %-15s %-8s %s\033[0m\n' "$(printf '%.0s─' {1..50})" "$(printf '%.0s─' {1..15})" "$(printf '%.0s─' {1..8})" "$(printf '%.0s─' {1..10})" >&2
+      while IFS='|' read -r p_url p_param p_source p_method _; do
+        local short_url="${p_url#http*://}"
+        [[ ${#short_url} -gt 48 ]] && short_url="${short_url:0:45}..."
+        local tag=""
+        echo "$p_param" | grep -qiE 'file|path|page|include|template|doc|load|read|dir|resource' && tag=$' \033[1;31m[LFI?]\033[0m'
+        echo "$p_param" | grep -qiE 'redirect|redir|next|return|goto|callback|dest|url' && tag=$' \033[1;33m[REDIR?]\033[0m'
+        printf '  %-50s \033[1;32m%-15s\033[0m %-8s %s%b\n' "$short_url" "$p_param" "${p_method:-GET}" "${p_source:-unknown}" "$tag" >&2
+      done < <(head -20 "${OUTDIR}/active_params.txt")
+      [[ "$total" -gt 20 ]] && printf '  \033[2m... and %d more (see active_params.txt)\033[0m\n' "$((total - 20))" >&2
+      printf '\n' >&2
+    fi
+
+    _json_event "params_complete" "{\"total\":$total,\"lfi\":$lfi_c,\"redirect\":$redir_c}"
     _save_state "params"
     return
   fi
@@ -789,7 +907,7 @@ step4_params() {
       : > "${OUTDIR}/params_arjun.txt"
       # Prioritize .php/.asp pages, limit to 5 targets to save time
       { grep -iE '\.(php|asp|aspx|jsp|do|action|cgi)(\?|$)' "$probed" 2>/dev/null; head -5 "$probed"; } | sort -u | head -5 | while IFS= read -r url; do
-        local result; result=$(timeout 60 arjun -u "$url" -t 10 --stable 2>/dev/null) || continue
+        local result; result=$(timeout 60 arjun -u "$url" -t 10 --stable 2>/dev/null) || continue  # stdout captured in $result
         # Parse arjun output → our format
         echo "$result" | grep -oP 'http[^\s]+' | while IFS= read -r found; do
           # Extract params from arjun discovered URLs
@@ -935,9 +1053,7 @@ step4_params() {
     while kill -0 "$pid" 2>/dev/null; do
       if [[ $(date +%s) -ge $param_deadline ]]; then
         _debug "Param deadline reached, killing remaining sources"
-        for kpid in "${pids[@]}"; do kill "$kpid" 2>/dev/null || true; done
-        sleep 1
-        for kpid in "${pids[@]}"; do kill -9 "$kpid" 2>/dev/null || true; done
+        for kpid in "${pids[@]}"; do _kill_tree_hard "$kpid"; done
         break 2
       fi
       sleep 1
@@ -1258,9 +1374,7 @@ step5_vuln_test() {
     while kill -0 "$pid" 2>/dev/null; do
       if [[ $(date +%s) -ge $vuln_deadline ]]; then
         _debug "Vuln deadline reached, killing remaining scanners"
-        for kpid in "${pids[@]}"; do kill "$kpid" 2>/dev/null || true; done
-        sleep 1
-        for kpid in "${pids[@]}"; do kill -9 "$kpid" 2>/dev/null || true; done
+        for kpid in "${pids[@]}"; do _kill_tree_hard "$kpid"; done
         break 2
       fi
       sleep 1
@@ -1377,6 +1491,23 @@ _merge_findings() {
   # Open Redirects
   [[ -f "${OUTDIR}/vuln/redirects.json" ]] && [[ -s "${OUTDIR}/vuln/redirects.json" ]] && \
     cat "${OUTDIR}/vuln/redirects.json" >> "$tmpmerge" 2>/dev/null || true
+
+  # SSRF
+  [[ -f "${OUTDIR}/vuln/ssrf.json" ]] && [[ -s "${OUTDIR}/vuln/ssrf.json" ]] && \
+    cat "${OUTDIR}/vuln/ssrf.json" >> "$tmpmerge" 2>/dev/null || true
+
+  # SQLi
+  [[ -f "${OUTDIR}/vuln/sqli.json" ]] && [[ -s "${OUTDIR}/vuln/sqli.json" ]] && \
+    cat "${OUTDIR}/vuln/sqli.json" >> "$tmpmerge" 2>/dev/null || true
+
+  # Commix (command injection)
+  if [[ -d "${OUTDIR}/vuln/commix_out" ]]; then
+    find "${OUTDIR}/vuln/commix_out" -name '*.txt' -size +0c 2>/dev/null | while IFS= read -r cfile; do
+      local curl_line
+      curl_line=$(grep -oP 'http[^\s]+' "$cfile" 2>/dev/null | head -1) || true
+      [[ -n "$curl_line" ]] && echo "{\"type\":\"command_injection\",\"url\":\"$curl_line\",\"confidence\":\"HIGH\",\"proof\":\"commix confirmed\",\"curl\":\"commix -u '$curl_line' --batch\"}"
+    done >> "$tmpmerge" 2>/dev/null || true
+  fi
 
   # Convert to JSON array
   if [[ -s "$tmpmerge" ]]; then

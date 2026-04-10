@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# TRAKTR Spinner & Progress v1.0
+# TRAKTR Spinner & Progress v2.0
 # Animated progress spinner, tool command display, and step progress bar
 # Usage: source spinner.sh (sourced by traktr.sh or phase scripts)
 

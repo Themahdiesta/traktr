@@ -1,19 +1,16 @@
 #!/usr/bin/env bash
-# TRAKTR Test Suite v1.0
+# TRAKTR Test Suite v2.0
 # Tests all core functions with mock data and real validation
 # Usage: ./tests/test_all.sh [--verbose]
 set -uo pipefail
 
 TRAKTR_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-VERBOSE=false
-[[ "${1:-}" == "--verbose" ]] && VERBOSE=true
-
 PASS=0; FAIL=0; SKIP=0
 TMPDIR=$(mktemp -d /tmp/traktr_test_XXXXX)
 
 # ── Colors ──────────────────────────────────────────────────────────────────
 GRN='\033[1;32m'; RED='\033[1;31m'; YEL='\033[1;33m'; CYN='\033[1;36m'
-DIM='\033[2m'; RST='\033[0m'
+RST='\033[0m'
 
 # ── Test helpers ────────────────────────────────────────────────────────────
 _test_pass() { ((PASS++)); echo -e "  ${GRN}PASS${RST} $1"; }
@@ -459,8 +456,8 @@ test_integration() {
 
   # Test --version flag
   local ver_output; ver_output=$(bash "${TRAKTR_ROOT}/src/core/traktr.sh" --version 2>&1) || true
-  echo "$ver_output" | grep -q '1.0' \
-    && _test_pass "--version shows 1.0" \
+  echo "$ver_output" | grep -q '2.0' \
+    && _test_pass "--version shows 2.0" \
     || _test_fail "--version" "output='$ver_output'"
 }
 
@@ -503,7 +500,7 @@ test_file_structure() {
 #  RUN ALL TESTS
 # ═══════════════════════════════════════════════════════════════════════════
 echo -e "\n${CYN}╔══════════════════════════════════════════════════════════╗${RST}"
-echo -e "${CYN}║           TRAKTR Test Suite v1.0                        ║${RST}"
+echo -e "${CYN}║           TRAKTR Test Suite v2.0                        ║${RST}"
 echo -e "${CYN}╚══════════════════════════════════════════════════════════╝${RST}"
 
 test_file_structure

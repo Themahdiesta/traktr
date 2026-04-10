@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# TRAKTR Plugin Loader v1.0
+# TRAKTR Plugin Loader v2.0
 # Auto-loads plugins from plugins/*.sh, provides hook system
 # Usage: source plugin_loader.sh (sourced by traktr.sh)
 

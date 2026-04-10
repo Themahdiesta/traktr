@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# TRAKTR Intelligence Brain v1.0
+# TRAKTR Intelligence Brain v2.0
 # Framework detection, payload selection, multi-signal validation, chaining
 # Usage: source brain.sh (sourced by traktr.sh)
 

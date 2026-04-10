@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# TRAKTR Installer v1.0 -- Installs all dependencies, tools, payloads, wordlists
+# TRAKTR Installer v2.0 -- Installs all dependencies, tools, payloads, wordlists
 # Usage: ./installer.sh [--dry-run] [--repair] [--upgrade]
 set -euo pipefail
 
@@ -502,8 +502,8 @@ banner() {
     |    |   |  | \// __ \|    < |  |  |  | \/
     |____|   |__|  (____  |__|_ \|__|  |__|
                         \/     \/
-        [ Intelligent Web Pentest Orchestrator ]
-                   INSTALLER v1.0
+       ~ plowing the web ~  INSTALLER v2.0
+             <3 By @mahdiesta
 EOF
 }
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# TRAKTR Reporter v1.0 -- Generates MD, JSON, and self-contained HTML reports
+# TRAKTR Reporter v2.0 -- Generates MD, JSON, and self-contained HTML reports
 # Usage: source reporter.sh; generate_html_report <outdir>
 
 # ═══════════════════════════════════════════════════════════════════════════

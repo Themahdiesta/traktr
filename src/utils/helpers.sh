@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# TRAKTR Common Utilities v1.0
+# TRAKTR Common Utilities v2.0
 # Logging, encoding, retry, User-Agent rotation, state management
 # Usage: source helpers.sh (sourced by traktr.sh)
 

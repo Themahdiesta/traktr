@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# TRAKTR - Burp Request Parser v1.0
+# TRAKTR - Burp Request Parser v2.0
 # Parses raw HTTP request files (Burp Suite export) into reusable scan context
 # Usage: source request_parser.sh; parse_burp_request /path/to/request.txt
 # Note: No set -e here -- this is a sourced library, caller controls error handling

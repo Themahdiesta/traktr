@@ -17,7 +17,8 @@ banner() {
     |    |   |  | \// __ \|    < |  |  |  | \/
     |____|   |__|  (____  |__|_ \|__|  |__|
                         \/     \/
-      [ Intelligent Web Pentest Orchestrator ]
+       ~ plowing the web ~    v2.0
+            <3 By @mahdiesta
 
 EOF
 }

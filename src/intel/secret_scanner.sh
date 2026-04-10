@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# TRAKTR Secret & Credential Scanner v1.0
+# TRAKTR Secret & Credential Scanner v2.0
 # Regex-based scanning of JS, HTML, error pages for leaked keys/tokens/secrets
 # Usage: source secret_scanner.sh; scan_secrets <outdir>
 

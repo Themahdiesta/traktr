@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# TRAKTR Scope Enforcement & Ban Detection v1.0
+# TRAKTR Scope Enforcement & Ban Detection v2.0
 # Prevents out-of-scope scanning, detects WAF blocks/rate limits
 # Usage: source scope_guard.sh; init_scope <target> [scope_pattern]
 

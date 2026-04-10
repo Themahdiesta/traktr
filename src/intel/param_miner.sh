@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# TRAKTR Deep Parameter Discovery v1.0
+# TRAKTR Deep Parameter Discovery v2.0
 # 6-source param mining: arjun, HTML forms, JS analysis, historical, wordlist, Burp
 # Usage: source param_miner.sh; mine_params <endpoints_file> <outdir>
 
@@ -46,7 +46,7 @@ mine_params() {
         head -10 "$endpoints_file"
       } | sort -u | head -20 | while IFS= read -r url; do
         local tmpout; tmpout=$(mktemp)
-        timeout 60 arjun -u "$url" -t 10 --stable -oT "$tmpout" 2>/dev/null || true
+        timeout 60 arjun -u "$url" -t 10 --stable -oT "$tmpout" >/dev/null 2>&1 || true
         [[ -s "$tmpout" ]] && while IFS= read -r line; do
           [[ -n "$line" ]] && echo "${url}|${line}|arjun|GET|brute"
         done < "$tmpout" >> "${outdir}/params_arjun.txt"
