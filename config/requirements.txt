@@ -1,0 +1,11 @@
+katana>=1.1.0
+ffuf>=2.1.0
+nuclei>=3.2.0
+httpx>=0.26.0
+gau>=2.1.0
+arjun>=2.1.0
+dalfox>=2.8.0
+commix>=3.8
+subfinder>=2.6.0
+waybackurls>=0.2.0
+testssl.sh>=3.2

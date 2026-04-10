@@ -1,0 +1,11 @@
+POST /api/v2/users?role=admin&debug=true HTTP/1.1
+Host: target.example.com
+Cookie: session=abc123def456; JSESSIONID=xyz789; _token=csrf_value_here
+Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwidXNlciI6ImFkbWluIiwiZXhwIjoyNzAwMDAwMDAwfQ.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c
+Content-Type: application/json
+X-CSRF-Token: abc123-csrf-token
+Accept: application/json
+Referer: https://target.example.com/dashboard
+X-Custom-Header: some-value
+
+{"username":"testuser","password":"secret123","email":"test@test.com","profile":{"role":"admin","active":true}}

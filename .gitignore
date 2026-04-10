@@ -1,0 +1,40 @@
+# Scan output
+scan_results/
+
+# Logs
+logs/*.log
+
+# Temp files
+*.tmp
+*.swp
+*~
+
+# Secrets / local config
+.env
+config/local.json
+
+# State files
+.traktr_state_*.json
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Claude Code
+.claude/
+
+# IDE
+.vscode/
+.idea/
+
+# Downloaded payload repos (installed at runtime)
+payloads/lfi/patt_intruders
+payloads/lfi/seclists_lfi
+payloads/sqli/patt_sqli
+payloads/sqli/seclists_sqli
+payloads/xss/patt_xss
+payloads/xss/seclists_xss
+payloads/rce/patt_rce
+payloads/ssrf/patt_ssrf
+payloads/xxe/patt_xxe
+payloads/waf_bypass/unicode

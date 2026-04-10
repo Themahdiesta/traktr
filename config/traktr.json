@@ -1,0 +1,33 @@
+{
+  "version": "1.0.0",
+  "scan": {
+    "max_threads": 20,
+    "request_delay": 0,
+    "timeout_seconds": 10,
+    "max_retries": 3,
+    "stealth_mode": false,
+    "oscp_mode": true
+  },
+  "payloads": {
+    "sources": ["patt", "seclists", "custom"],
+    "auto_update": true,
+    "skip_destructive": true
+  },
+  "output": {
+    "format": ["markdown", "json"],
+    "webhook_url": "",
+    "include_poc": true,
+    "confidence_threshold": "MEDIUM"
+  },
+  "evasion": {
+    "rotate_useragent": true,
+    "random_delay_range": [0, 2],
+    "respect_robots": true,
+    "waf_bypass_attempts": 3
+  },
+  "plugins": {
+    "auto_load": true,
+    "directory": "plugins",
+    "allowed_patterns": ["*.sh"]
+  }
+}
