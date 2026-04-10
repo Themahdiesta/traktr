@@ -137,6 +137,42 @@ HTMLSHDR
     echo "</tbody></table>" >> "${outdir}/REPORT.html"
   fi
 
+  # Discovered Endpoints table (always shown for manual testing)
+  if [[ "$total_endpoints" -gt 0 ]]; then
+    cat >> "${outdir}/REPORT.html" << 'HTMLEHDR'
+<h2>Discovered Endpoints</h2>
+<details open><summary>Click to expand/collapse</summary>
+<table><thead><tr><th>URL</th></tr></thead><tbody>
+HTMLEHDR
+    head -100 "${outdir}/all_endpoints_paths.txt" 2>/dev/null | while IFS= read -r ep; do
+      [[ -z "$ep" ]] && continue
+      local safe_ep; safe_ep=$(echo "$ep" | sed 's/</\&lt;/g; s/>/\&gt;/g')
+      echo "<tr><td><code>${safe_ep}</code></td></tr>" >> "${outdir}/REPORT.html"
+    done
+    echo "</tbody></table></details>" >> "${outdir}/REPORT.html"
+    [[ "$total_endpoints" -gt 100 ]] && echo "<p><em>... and $((total_endpoints - 100)) more (see all_endpoints.txt)</em></p>" >> "${outdir}/REPORT.html"
+  fi
+
+  # Discovered Parameters table (always shown for manual testing)
+  if [[ "$total_params" -gt 0 ]]; then
+    cat >> "${outdir}/REPORT.html" << 'HTMLPHDR'
+<h2>Discovered Parameters</h2>
+<details open><summary>Click to expand/collapse</summary>
+<table><thead><tr><th>Endpoint</th><th>Parameter</th><th>Method</th><th>Source</th><th>Tags</th></tr></thead><tbody>
+HTMLPHDR
+    head -100 "${outdir}/active_params.txt" 2>/dev/null | while IFS='|' read -r p_url p_param p_source p_method _; do
+      [[ -z "$p_param" ]] && continue
+      local safe_url; safe_url=$(echo "$p_url" | sed 's/</\&lt;/g; s/>/\&gt;/g')
+      local tags=""
+      echo "$p_param" | grep -qiE 'file|path|page|include|template|doc|load|read|dir|resource' && tags+='<span class="badge badge-high">LFI?</span> '
+      echo "$p_param" | grep -qiE 'redirect|redir|next|return|goto|callback|dest|url' && tags+='<span class="badge badge-med">REDIR?</span> '
+      echo "$p_param" | grep -qiE '^id$|user|email|name|password|token|key|secret|admin' && tags+='<span class="badge badge-low">IDOR?</span> '
+      echo "<tr><td><code>${safe_url}</code></td><td><code>${p_param}</code></td><td>${p_method:-GET}</td><td>${p_source:-?}</td><td>${tags:-&mdash;}</td></tr>" >> "${outdir}/REPORT.html"
+    done
+    echo "</tbody></table></details>" >> "${outdir}/REPORT.html"
+    [[ "$total_params" -gt 100 ]] && echo "<p><em>... and $((total_params - 100)) more (see active_params.txt)</em></p>" >> "${outdir}/REPORT.html"
+  fi
+
   # JavaScript for filtering/sorting + footer
   cat >> "${outdir}/REPORT.html" << 'HTMLFOOT'
 </div>

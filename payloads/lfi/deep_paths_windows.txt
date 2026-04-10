@@ -1,0 +1,35 @@
+C:\windows\win.ini
+C:\windows\system.ini
+C:\windows\system32\drivers\etc\hosts
+C:\windows\system32\config\SAM
+C:\windows\system32\config\SYSTEM
+C:\windows\system32\config\SOFTWARE
+C:\windows\repair\SAM
+C:\windows\repair\SYSTEM
+C:\windows\debug\NetSetup.log
+C:\windows\system32\LogFiles\W3SVC1\ex*.log
+C:\inetpub\wwwroot\web.config
+C:\inetpub\wwwroot\global.asax
+C:\inetpub\logs\LogFiles\W3SVC1\ex*.log
+C:\xampp\apache\conf\httpd.conf
+C:\xampp\apache\logs\access.log
+C:\xampp\apache\logs\error.log
+C:\xampp\php\php.ini
+C:\xampp\mysql\data\mysql\user.MYD
+C:\wamp\apache2\conf\httpd.conf
+C:\wamp\logs\access.log
+C:\Program Files\Apache Group\Apache2\conf\httpd.conf
+C:\Program Files\MySQL\MySQL Server 8.0\my.ini
+..\..\..\..\windows\win.ini
+..\..\..\..\windows\system.ini
+..\..\..\..\windows\system32\drivers\etc\hosts
+..\..\..\..\inetpub\wwwroot\web.config
+..\..\..\..\windows\repair\SAM
+..\..\..\..\windows\system32\config\SAM
+..\..\..\..\xampp\apache\conf\httpd.conf
+..\..\..\..\Program Files\Apache Group\Apache2\conf\httpd.conf
+WEB-INF/web.xml
+WEB-INF/classes/application.properties
+WEB-INF/classes/application.yml
+META-INF/MANIFEST.MF
+META-INF/context.xml

