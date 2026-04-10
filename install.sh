@@ -48,6 +48,7 @@ mkdir -p "$BIN_DIR"
 cat > "${BIN_DIR}/traktr" << WRAPPER
 #!/usr/bin/env bash
 export TRAKTR_ROOT="${TRAKTR_ROOT}"
+export PATH="\${HOME}/go/bin:/usr/local/go/bin:\${HOME}/.local/bin:\${PATH}"
 exec bash "\${TRAKTR_ROOT}/src/core/traktr.sh" "\$@"
 WRAPPER
 chmod +x "${BIN_DIR}/traktr"

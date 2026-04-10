@@ -6,9 +6,12 @@
 set -euo pipefail
 
 TRAKTR_VERSION="1.0.0"
-TRAKTR_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+TRAKTR_ROOT="${TRAKTR_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
 TRAKTR_HOME="${HOME}/.traktr"
 SCAN_START=$(date +%s)
+
+# Ensure Go tools and local bins are in PATH
+export PATH="${HOME}/go/bin:/usr/local/go/bin:${HOME}/.local/bin:${PATH}"
 
 # ── Defaults ─────────────────────────────────────────────────────────────────
 TARGET="" ; REQUEST_FILE="" ; SCOPE_PATTERN=""
@@ -245,7 +248,14 @@ step0_init() {
 
   # Create output directory
   [[ -z "$OUTDIR" ]] && OUTDIR="${TRAKTR_ROOT}/scan_results/${domain}_$(date +%Y%m%d_%H%M%S)"
-  mkdir -p "$OUTDIR" "${OUTDIR}/crawl" "${OUTDIR}/responses" "${TRAKTR_ROOT}/logs"
+  mkdir -p "$OUTDIR" "${OUTDIR}/crawl" "${OUTDIR}/responses" "${OUTDIR}/vuln" "${TRAKTR_ROOT}/logs"
+  # Pre-create output files to avoid "No such file" errors downstream
+  touch "${OUTDIR}/all_endpoints.txt" "${OUTDIR}/all_endpoints_paths.txt" \
+        "${OUTDIR}/probed_urls.txt" "${OUTDIR}/active_params.txt" \
+        "${OUTDIR}/lfi_candidates.txt" "${OUTDIR}/redirect_candidates.txt" \
+        "${OUTDIR}/findings.json" "${OUTDIR}/secrets.json" \
+        "${OUTDIR}/poc_commands.txt" "${OUTDIR}/error_pages.txt" \
+        "${OUTDIR}/access_control.txt" "${OUTDIR}/redirects.txt"
   LOGFILE="${TRAKTR_ROOT}/logs/traktr_$(date +%Y%m%d_%H%M%S).log"
   touch "$LOGFILE"
 
@@ -484,8 +494,10 @@ step2_crawl() {
       ffuf -u "${TARGET}/FUZZ" -w "$wordlist" \
         -mc 200,201,301,302,307,401,403,500 \
         -t 10 -s "${ffuf_rate_flag[@]+"${ffuf_rate_flag[@]}"}" \
-        "${ffuf_hdrs[@]+"${ffuf_hdrs[@]}"}" \
-        > "${OUTDIR}/crawl/ffuf_dirs.txt" 2>/dev/null || true
+        "${ffuf_hdrs[@]+"${ffuf_hdrs[@]}"}" 2>/dev/null | \
+        while IFS= read -r word; do
+          [[ -n "$word" ]] && echo "${TARGET}/${word}"
+        done > "${OUTDIR}/crawl/ffuf_dirs.txt" || true
     ) &
     pids+=($!)
   fi
@@ -494,24 +506,74 @@ step2_crawl() {
   _log "  Waiting for ${#pids[@]} crawlers..."
   for pid in "${pids[@]}"; do wait "$pid" 2>/dev/null || true; done
 
+  # ── HTML link extraction (lightweight spider from index page) ──
+  _debug "Extracting links from HTML pages"
+  (
+    local base_url="$TARGET"
+    # Fetch the main page and extract href/src links
+    local body
+    body=$(_curl "$TARGET" 2>/dev/null) || true
+    if [[ -n "$body" ]]; then
+      # Extract href and src attributes
+      echo "$body" | grep -oiP '(?:href|src|action)\s*=\s*["\x27]([^"\x27#]+)' | \
+        grep -oiP '["\x27][^"\x27]+' | tr -d "\"'" | while IFS= read -r link; do
+          [[ -z "$link" ]] && continue
+          [[ "$link" == "http"* ]] && { echo "$link"; continue; }
+          [[ "$link" == "//"* ]] && continue
+          [[ "$link" == "/"* ]] && { echo "${base_url}${link}"; continue; }
+          echo "${base_url}/${link}"
+        done
+      # Follow one level deep -- fetch each discovered page for more links
+      echo "$body" | grep -oiP 'href\s*=\s*["\x27](/[^"\x27#?]+\.php)' | \
+        grep -oiP '/[^"\x27]+' | sort -u | head -20 | while IFS= read -r page; do
+          local page_body
+          page_body=$(_curl "${base_url}${page}" 2>/dev/null) || continue
+          echo "$page_body" | grep -oiP '(?:href|src|action)\s*=\s*["\x27]([^"\x27#]+)' | \
+            grep -oiP '["\x27][^"\x27]+' | tr -d "\"'" | while IFS= read -r link; do
+              [[ -z "$link" ]] && continue
+              [[ "$link" == "http"* ]] && { echo "$link"; continue; }
+              [[ "$link" == "//"* ]] && continue
+              [[ "$link" == "/"* ]] && { echo "${base_url}${link}"; continue; }
+              echo "${base_url}/${link}"
+            done
+        done
+    fi
+  ) > "${OUTDIR}/crawl/html_links.txt" 2>/dev/null || true
+
   # ── MERGE + DEDUPE + SCOPE FILTER ──
   _log "  Merging crawl results..."
+  local _merge_tmp; _merge_tmp=$(mktemp)
   {
     cat "${OUTDIR}"/crawl/*.txt 2>/dev/null
     # Add Burp-imported endpoint if -r mode
     [[ -n "$REQUEST_FILE" ]] && [[ -n "${BURP_TARGET:-}" ]] && echo "$BURP_TARGET"
-  } | grep -oP 'https?://[^\s<>"'"'"'\\]+' | \
+    # Always include the target itself
+    echo "$TARGET"
+  } | while IFS= read -r line; do
+    [[ -z "$line" ]] && continue
+    # Lines that are already full URLs
+    if [[ "$line" == http://* ]] || [[ "$line" == https://* ]]; then
+      echo "$line"
+    # Bare paths starting with / -- prepend target base
+    elif [[ "$line" == /* ]]; then
+      echo "${TARGET}${line}"
+    # Bare words (like ffuf output without our fix, or relative paths)
+    elif [[ "$line" != *" "* ]] && [[ ${#line} -lt 200 ]]; then
+      echo "${TARGET}/${line}"
+    fi
+  done > "$_merge_tmp"
+
+  # Dedupe: paths only (strip query/fragment)
+  grep -oP 'https?://[^\s<>"'"'"'\\]+' "$_merge_tmp" 2>/dev/null | \
     sed 's/[?#].*//' | sort -u | \
     grep -E "$SCOPE_PATTERN" \
     > "${OUTDIR}/all_endpoints_paths.txt" 2>/dev/null || true
 
-  # Also keep full URLs with query strings (for param mining later)
-  {
-    cat "${OUTDIR}"/crawl/*.txt 2>/dev/null
-    [[ -n "$REQUEST_FILE" ]] && [[ -n "${BURP_TARGET:-}" ]] && echo "$BURP_TARGET"
-  } | grep -oP 'https?://[^\s<>"'"'"'\\]+' | sort -u | \
+  # Full URLs with query strings (for param mining later)
+  grep -oP 'https?://[^\s<>"'"'"'\\]+' "$_merge_tmp" 2>/dev/null | sort -u | \
     grep -E "$SCOPE_PATTERN" \
     > "${OUTDIR}/all_endpoints.txt" 2>/dev/null || true
+  rm -f "$_merge_tmp"
 
   # Per-source metrics
   _log "  Crawl metrics:"
