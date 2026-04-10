@@ -62,8 +62,8 @@ mine_params() {
     while IFS= read -r url; do
       local body; body=$(_curl "$url" 2>/dev/null) || continue
 
-      # All input fields (name attribute)
-      echo "$body" | grep -oiP '<input\b[^>]*\bname\s*=\s*["\x27]([^"\x27]+)' | \
+      # All input fields (name attribute) -- exclude type="file" (upload, not LFI)
+      echo "$body" | grep -oiP '<input\b[^>]+>' | grep -viP 'type\s*=\s*["\x27]file["\x27]' | \
         grep -oiP 'name\s*=\s*["\x27]\K[^"\x27]+' | while IFS= read -r p; do
           echo "${url}|${p}|html_input|GET|form"
         done

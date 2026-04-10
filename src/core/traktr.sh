@@ -830,13 +830,32 @@ step4_params() {
     ( mine_params "${OUTDIR}/probed_urls.txt" "$OUTDIR" || true ) &
     local mp_pid=$!
     local mp_deadline=$(( $(date +%s) + 240 ))
+    local _last_param_count=0
     while kill -0 "$mp_pid" 2>/dev/null; do
       if [[ $(date +%s) -ge $mp_deadline ]]; then
         _debug "Param mining deadline reached, killing process tree"
         _kill_tree_hard "$mp_pid"
         break
       fi
-      sleep 1
+      # Real-time: show new params as they're discovered
+      local _live_count
+      _live_count=$(cat "${OUTDIR}"/params_*.txt 2>/dev/null | grep -c '|' 2>/dev/null || echo 0)
+      if [[ "$_live_count" -gt "$_last_param_count" ]]; then
+        local _new_lines
+        _new_lines=$(( _live_count - _last_param_count ))
+        _spin_stop
+        # Show newly discovered params
+        cat "${OUTDIR}"/params_*.txt 2>/dev/null | grep '|' | sort -t'|' -k1,2 -u | \
+          tail -n "$_new_lines" | while IFS='|' read -r _purl _pparam _psrc _pmethod _pnote; do
+            [[ -z "$_pparam" ]] && continue
+            local _short="${_purl#http*://}"
+            [[ ${#_short} -gt 40 ]] && _short="${_short:0:37}..."
+            printf '  \033[1;32m  [+] PARAM\033[0m %-42s \033[1;33m%-15s\033[0m %s (%s)\n' "$_short" "$_pparam" "${_pmethod:-GET}" "$_psrc" >&2
+          done
+        _last_param_count=$_live_count
+        _spin "Mining parameters... (${_live_count} found so far)"
+      fi
+      sleep 2
     done
     wait "$mp_pid" 2>/dev/null || true
     _spin_stop
