@@ -1,4 +1,4 @@
-# Traktr -- Intelligent Web Pentest Orchestrator
+# Traktr -- plowing the web
 
 > *"One command. Full enumeration. Smart LFI. OSCP-safe by design."*
 
