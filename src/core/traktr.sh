@@ -276,8 +276,15 @@ step0_init() {
 
   [[ -z "$TARGET" ]] && _die "No target specified. Use: traktr <url> or traktr -r request.txt"
 
-  # Normalize target (ensure scheme)
-  [[ "$TARGET" != http://* ]] && [[ "$TARGET" != https://* ]] && TARGET="https://${TARGET}"
+  # Normalize target (ensure scheme) - auto-detect if not specified
+  if [[ "$TARGET" != http://* ]] && [[ "$TARGET" != https://* ]]; then
+    # Try https first, fall back to http
+    if curl -sk --max-time 5 --connect-timeout 3 -o /dev/null -w '%{http_code}' "https://${TARGET}" 2>/dev/null | grep -qP '^[1-5]'; then
+      TARGET="https://${TARGET}"
+    else
+      TARGET="http://${TARGET}"
+    fi
+  fi
   # Strip trailing slash
   TARGET="${TARGET%/}"
 
@@ -546,6 +553,22 @@ step2_crawl() {
     pids+=($!)
   fi
 
+  # ── feroxbuster (recursive directory discovery) ──
+  if command -v feroxbuster &>/dev/null && [[ -f "$wordlist" ]]; then
+    _tool_cmd "feroxbuster" "feroxbuster -u $TARGET -w dirs_common.txt --depth 2 --auto-tune -q"
+    local ferox_rate=()
+    [[ "$RATE_LIMIT" -gt 0 ]] && ferox_rate+=(--rate-limit "$RATE_LIMIT")
+    (
+      timeout 180 feroxbuster -u "$TARGET" -w "$wordlist" \
+        --depth 2 --auto-tune -q --no-state -t 10 \
+        --status-codes 200,201,301,302,307,401,403 \
+        "${ferox_rate[@]+"${ferox_rate[@]}"}" \
+        "${ffuf_hdrs[@]+"${ffuf_hdrs[@]}"}" 2>/dev/null | \
+        grep -oP 'https?://[^\s]+' > "${OUTDIR}/crawl/feroxbuster.txt" || true
+    ) &
+    pids+=($!)
+  fi
+
   # Wait for all crawlers with a master deadline (4 minutes max)
   local crawl_deadline=$(( $(date +%s) + 240 ))
   _log "  Waiting for ${#pids[@]} crawlers (max 4 min)..."
@@ -734,9 +757,20 @@ step4_params() {
   [[ ! -s "$probed" ]] && { _warn "No live endpoints for param discovery"; return; }
   _spin "Mining parameters from 6 sources (HTML, JS, Arjun, historical, wordlist, crawl)..."
 
-  # Use Phase 3 mine_params() if available
+  # Use Phase 3 mine_params() if available (with 4-min timeout)
   if declare -f mine_params &>/dev/null; then
-    mine_params "${OUTDIR}/probed_urls.txt" "$OUTDIR" 2>/dev/null || true
+    ( mine_params "${OUTDIR}/probed_urls.txt" "$OUTDIR" 2>/dev/null || true ) &
+    local mp_pid=$!
+    local mp_deadline=$(( $(date +%s) + 240 ))
+    while kill -0 "$mp_pid" 2>/dev/null; do
+      if [[ $(date +%s) -ge $mp_deadline ]]; then
+        _debug "Param mining deadline reached"
+        kill "$mp_pid" 2>/dev/null || true; sleep 1; kill -9 "$mp_pid" 2>/dev/null || true
+        break
+      fi
+      sleep 1
+    done
+    wait "$mp_pid" 2>/dev/null || true
     _spin_stop
     local total; total=$(wc -l < "${OUTDIR}/active_params.txt" 2>/dev/null || echo 0)
     _ok "Parameters discovered: $total (see ${OUTDIR}/active_params.txt)"
@@ -779,10 +813,10 @@ step4_params() {
     while IFS= read -r url; do
       local body; body=$(_curl "$url" 2>/dev/null) || continue
 
-      # All <input name="..."> (including hidden)
-      echo "$body" | grep -oiP '<input\b[^>]*\bname\s*=\s*["\x27]([^"\x27]+)["\x27]' | \
+      # All <input name="..."> (excluding type="file" which is upload, not LFI)
+      echo "$body" | grep -oiP '<input\b[^>]+>' | grep -viP 'type\s*=\s*["\x27]file["\x27]' | \
         grep -oiP 'name\s*=\s*["\x27]\K[^"\x27]+' | while IFS= read -r p; do
-          echo "${url}|${p}|html_input|GET|extracted"
+          echo "${url}|${p}|html_input|GET|form"
         done
 
       # Hidden inputs specifically tagged
@@ -917,7 +951,7 @@ step4_params() {
     sort -t'|' -k1,2 -u > "${OUTDIR}/active_params.txt" 2>/dev/null || true
 
   # Tag LFI candidate params (file/path operation names)
-  local lfi_keywords='file\|path\|page\|include\|template\|doc\|folder\|view\|load\|read\|dir\|resource\|filename\|download\|src\|conf\|log\|url\|action\|cat\|type\|content\|prefix\|require\|pg\|document\|root\|data'
+  local lfi_keywords='file\|path\|page\|include\|template\|doc\|folder\|view\|load\|read\|dir\|resource\|filename\|download\|src\|conf\|log\|url\|action\|cat\|type\|content\|prefix\|require\|pg\|document\|root\|data\|board\|date\|detail\|inc\|locate\|show\|layout\|mod\|site\|img\|open\|nav\|import'
   grep -i "$lfi_keywords" "${OUTDIR}/active_params.txt" 2>/dev/null | \
     sort -u > "${OUTDIR}/lfi_candidates.txt" 2>/dev/null || true
 
@@ -1293,8 +1327,12 @@ _lfi_basic_test() {
 
       if [[ $signals -ge 1 ]]; then
         local conf="LOW"
-        [[ $signals -ge 2 ]] && conf="HIGH"
-        [[ $signals -eq 1 ]] && conf="MEDIUM"
+        # Require content_match for HIGH; size_delta alone = MEDIUM
+        if [[ $signals -ge 2 ]] && [[ "$signal_list" == *"content_match"* ]]; then
+          conf="HIGH"
+        elif [[ $signals -ge 1 ]]; then
+          conf="MEDIUM"
+        fi
         local prefix=""; [[ "$OSCP" == true ]] && prefix="POTENTIAL "
         local proof; proof=$(grep -oP -m1 'root:x:0:[^\n]{0,60}|\[extensions\][^\n]{0,40}|PD9waH[^\n]{0,40}' "$tmpfile" 2>/dev/null || echo "size_delta=$delta")
 

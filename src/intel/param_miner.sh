@@ -4,7 +4,7 @@
 # Usage: source param_miner.sh; mine_params <endpoints_file> <outdir>
 
 # ── LFI/redirect keyword lists ──────────────────────────────────────────────
-LFI_PARAM_KEYWORDS='file|path|page|include|template|doc|folder|view|load|read|dir|resource|filename|download|src|conf|log|url|action|cat|type|content|prefix|require|pg|document|root|data|img|image|open|nav|site|import'
+LFI_PARAM_KEYWORDS='file|path|page|include|template|doc|folder|view|load|read|dir|resource|filename|download|src|conf|log|url|action|cat|type|content|prefix|require|pg|document|root|data|img|image|open|nav|site|import|board|date|detail|inc|locate|show|layout|mod'
 # Short single-letter params commonly used for file operations
 LFI_SHORT_PARAMS='p|f|fn|fp|loc|uri|val'
 REDIR_PARAM_KEYWORDS='redirect|redir|next|return|goto|url|callback|continue|dest|destination|target|rurl|forward|out|link|jump|checkout|return_to|login_url|image_url|return_url|next_page'

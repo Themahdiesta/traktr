@@ -168,6 +168,19 @@ install_pip_tools() {
   for pkg in arjun commix; do
     tool_install "$pkg" "$pkg" pip3 install --break-system-packages "$pkg"
   done
+  # feroxbuster (Rust-based recursive dir scanner, available in Kali repos)
+  if ! has_tool feroxbuster; then
+    log "  [~] Installing feroxbuster..."
+    if "$PKG_INSTALL" feroxbuster 2>/dev/null; then
+      ok "feroxbuster installed"
+      ((INSTALLED++)) || true
+    else
+      warn "feroxbuster not available in repos (optional)"
+    fi
+  else
+    ok "feroxbuster already installed ($(which feroxbuster))"
+    ((SKIPPED++)) || true
+  fi
 }
 
 # ── Step 5: Nuclei Templates ────────────────────────────────────────────────
