@@ -43,13 +43,19 @@ _log()  {
   # Stop spinner temporarily so log output isn't mangled
   local had_spinner=false
   [[ -n "${_SPINNER_PID:-}" ]] && { had_spinner=true; _spinner_stop 2>/dev/null; }
-  echo "[$(date '+%H:%M:%S')] $1" | tee -a "${LOGFILE:-/dev/null}"
+  local ts; ts="[$(date '+%H:%M:%S')]"
+  # Terminal: preserve ANSI colors
+  printf '%s %s\n' "$ts" "$1" >&2
+  # Log file: strip ANSI codes for clean text
+  if [[ -n "${LOGFILE:-}" ]] && [[ -f "${LOGFILE:-}" ]]; then
+    printf '%s %s\n' "$ts" "$1" | sed 's/\x1b\[[0-9;]*m//g' >> "$LOGFILE"
+  fi
   # Restart spinner if it was running
   $had_spinner && [[ -n "${_SPINNER_LAST_MSG:-}" ]] && _spinner_start "$_SPINNER_LAST_MSG" 2>/dev/null || true
 }
-_ok()   { _log "  \033[1;32m[+]\033[0m $1"; }
-_warn() { _log "  \033[1;33m[!]\033[0m $1"; }
-_fail() { _log "  \033[1;31m[-]\033[0m $1"; }
+_ok()   { _log $'  \033[1;32m[+]\033[0m '"$1"; }
+_warn() { _log $'  \033[1;33m[!]\033[0m '"$1"; }
+_fail() { _log $'  \033[1;31m[-]\033[0m '"$1"; }
 _debug(){ [[ "$DEBUG" == true ]] && _log "  [DBG] $1" || true; }
 _die()  { _fail "$1"; exit 1; }
 
@@ -471,7 +477,7 @@ step2_crawl() {
   if command -v katana &>/dev/null; then
     _tool_cmd "katana" "katana -u $TARGET -jc -d $CRAWL_DEPTH -js-crawl -known-files all"
     (
-      katana -u "$TARGET" -jc -d "$CRAWL_DEPTH" -js-crawl -known-files all \
+      timeout 180 katana -u "$TARGET" -jc -d "$CRAWL_DEPTH" -js-crawl -known-files all \
         -silent -nc "${katana_hdrs[@]+"${katana_hdrs[@]}"}" \
         > "${OUTDIR}/crawl/katana.txt" 2>/dev/null || true
     ) &
@@ -488,11 +494,11 @@ step2_crawl() {
     fi
   fi
 
-  # ── GAU (historical URLs) ──
+  # ── GAU (historical URLs) ── timeout prevents hanging on bare IPs
   if command -v gau &>/dev/null; then
     _tool_cmd "gau" "gau --threads 5 $domain"
     (
-      gau --threads 5 "$domain" > "${OUTDIR}/crawl/gau.txt" 2>/dev/null || true
+      timeout 90 gau --threads 5 "$domain" > "${OUTDIR}/crawl/gau.txt" 2>/dev/null || true
     ) &
     pids+=($!)
   fi
@@ -501,7 +507,7 @@ step2_crawl() {
   if command -v waybackurls &>/dev/null; then
     _tool_cmd "waybackurls" "echo $domain | waybackurls"
     (
-      echo "$domain" | waybackurls > "${OUTDIR}/crawl/wayback.txt" 2>/dev/null || true
+      echo "$domain" | timeout 90 waybackurls > "${OUTDIR}/crawl/wayback.txt" 2>/dev/null || true
     ) &
     pids+=($!)
   fi
@@ -527,7 +533,7 @@ step2_crawl() {
     [[ "$RATE_LIMIT" -gt 0 ]] && ffuf_rate_flag+=(-rate "$RATE_LIMIT")
     (
       # -ac = auto-calibrate: filters out catch-all responses (try_files fallbacks)
-      ffuf -u "${TARGET}/FUZZ" -w "$wordlist" \
+      timeout 180 ffuf -u "${TARGET}/FUZZ" -w "$wordlist" \
         -mc 200,201,301,302,307,401,403,500 -ac \
         -t 10 -s "${ffuf_rate_flag[@]+"${ffuf_rate_flag[@]}"}" \
         "${ffuf_hdrs[@]+"${ffuf_hdrs[@]}"}" 2>/dev/null | \
@@ -732,8 +738,9 @@ step4_params() {
     _debug "Launching arjun"
     (
       > "${OUTDIR}/params_arjun.txt"
-      head -50 "$probed" | while IFS= read -r url; do
-        local result; result=$(arjun -u "$url" -t 10 --stable 2>/dev/null) || continue
+      # Prioritize .php/.asp pages, limit to 5 targets to save time
+      { grep -iE '\.(php|asp|aspx|jsp|do|action|cgi)(\?|$)' "$probed" 2>/dev/null; head -5 "$probed"; } | sort -u | head -5 | while IFS= read -r url; do
+        local result; result=$(timeout 60 arjun -u "$url" -t 10 --stable 2>/dev/null) || continue
         # Parse arjun output → our format
         echo "$result" | grep -oP 'http[^\s]+' | while IFS= read -r found; do
           # Extract params from arjun discovered URLs
@@ -795,7 +802,7 @@ step4_params() {
             echo "$path" >> "${OUTDIR}/all_endpoints.txt"
           fi
         done
-    done < <(head -100 "$probed") > "${OUTDIR}/params_html.txt" 2>/dev/null || true
+    done < <(head -30 "$probed") > "${OUTDIR}/params_html.txt" 2>/dev/null || true
   ) &
   pids+=($!)
 
@@ -894,7 +901,26 @@ step4_params() {
   local lfi_c; lfi_c=$(wc -l < "${OUTDIR}/lfi_candidates.txt" 2>/dev/null || echo 0)
   local redir_c; redir_c=$(wc -l < "${OUTDIR}/redirect_candidates.txt" 2>/dev/null || echo 0)
 
-  _ok "Params: $total total | $lfi_c LFI-candidates | $redir_c redirect-candidates"
+  _spin_stop
+  _ok "Parameters discovered: $total | LFI-candidates: $lfi_c | Redirect-candidates: $redir_c"
+
+  # Display parameter summary table
+  if [[ "$total" -gt 0 ]]; then
+    printf '\n' >&2
+    printf '  \033[1;36m%-50s %-15s %-8s %s\033[0m\n' "ENDPOINT" "PARAM" "METHOD" "SOURCE" >&2
+    printf '  \033[2m%-50s %-15s %-8s %s\033[0m\n' "$(printf '%.0s─' {1..50})" "$(printf '%.0s─' {1..15})" "$(printf '%.0s─' {1..8})" "$(printf '%.0s─' {1..10})" >&2
+    while IFS='|' read -r url param source method extra _; do
+      local short_url="${url#http*://}"
+      [[ ${#short_url} -gt 48 ]] && short_url="${short_url:0:45}..."
+      local tag=""
+      # Highlight LFI/redirect candidates
+      echo "$param" | grep -qiE 'file|path|page|include|template|doc|load|read|dir|resource' && tag=$' \033[1;31m[LFI?]\033[0m'
+      echo "$param" | grep -qiE 'redirect|redir|next|return|goto|callback|dest|url' && tag=$' \033[1;33m[REDIR?]\033[0m'
+      printf '  %-50s \033[1;32m%-15s\033[0m %-8s %s%b\n' "$short_url" "$param" "${method:-GET}" "${source:-unknown}" "$tag" >&2
+    done < <(head -20 "${OUTDIR}/active_params.txt")
+    [[ "$total" -gt 20 ]] && printf '  \033[2m... and %d more (see active_params.txt)\033[0m\n' "$((total - 20))" >&2
+    printf '\n' >&2
+  fi
 
   _json_event "params_complete" "{\"total\":$total,\"lfi\":$lfi_c,\"redirect\":$redir_c}"
   _save_state "params"
@@ -1026,12 +1052,15 @@ step5_vuln_test() {
 
   # ── LFI ENGINE ──
   if [[ "$SKIP_LFI" != true ]] && [[ -s "${OUTDIR}/lfi_candidates.txt" ]]; then
-    _tool_cmd "lfi-engine" "6-level LFI escalation ($(wc -l < "${OUTDIR}/lfi_candidates.txt") candidates)"
+    local lfi_count; lfi_count=$(wc -l < "${OUTDIR}/lfi_candidates.txt")
+    _tool_cmd "lfi-engine" "LFI escalation (${lfi_count} candidates)"
     (
       if declare -f detect_lfi &>/dev/null; then
-        # Phase 3 engine (when built)
+        # Full 6-level LFI engine with auto-read
+        # stdout → JSON file, stderr → terminal (for auto-read display)
         while IFS='|' read -r url param source method _; do
-          detect_lfi "$url" "$param" "$method" 2>/dev/null
+          [[ -z "$url" ]] || [[ -z "$param" ]] && continue
+          detect_lfi "$url" "$param" "${method:-GET}"
         done < "${OUTDIR}/lfi_candidates.txt" > "${OUTDIR}/vuln/lfi.json" || true
       else
         _lfi_basic_test > "${OUTDIR}/vuln/lfi.json"
@@ -1057,18 +1086,23 @@ step5_vuln_test() {
 
   # ── Command Injection (commix) ──
   if command -v commix &>/dev/null && [[ -s "${OUTDIR}/active_params.txt" ]]; then
-    _tool_cmd "commix" "commix --batch --level $([[ "$OSCP" == true ]] && echo 1 || echo 3) (RCE scan)"
     local clevel=3
     [[ "$OSCP" == true ]] && clevel=1
+    # Limit to 5 unique base URLs to avoid banner spam and wasted time
+    local commix_targets; commix_targets=$(mktemp)
+    awk -F'|' '{base=$1; sub(/\?.*/, "", base); print base "|" $2}' "${OUTDIR}/active_params.txt" | \
+      sort -u | head -5 > "$commix_targets"
+    local commix_count; commix_count=$(wc -l < "$commix_targets")
+    _tool_cmd "commix" "commix --batch --level ${clevel} (${commix_count} targets)"
     (
-      while IFS='|' read -r url param source method _; do
-        [[ -z "$url" ]] || [[ -z "$param" ]] && continue
-        # Build proper test URL (strip existing query params from base)
-        local base_url="${url%%\?*}"
+      while IFS='|' read -r base_url param; do
+        [[ -z "$base_url" ]] || [[ -z "$param" ]] && continue
         local tgt="${base_url}?${param}=test"
-        timeout 30 commix --batch --level "$clevel" -u "$tgt" \
-          --output-dir="${OUTDIR}/vuln/commix_out" </dev/null 2>/dev/null || true
-      done < <(head -20 "${OUTDIR}/active_params.txt")
+        timeout 45 commix --batch --level "$clevel" -u "$tgt" \
+          --output-dir="${OUTDIR}/vuln/commix_out" --no-logging \
+          </dev/null >/dev/null 2>&1 || true
+      done < "$commix_targets"
+      rm -f "$commix_targets"
     ) &
     pids+=($!)
   fi
@@ -1193,6 +1227,9 @@ _lfi_basic_test() {
       resp_code=$(_curl "$test_url" -o "$tmpfile" -w '%{http_code}|%{size_download}' 2>/dev/null) || { rm -f "$tmpfile"; continue; }
       local status="${resp_code%%|*}"
       local size="${resp_code##*|}"
+
+      # Skip if curl failed entirely (000 = connection error)
+      [[ "$status" == "000" ]] && { rm -f "$tmpfile"; continue; }
 
       local signals=0 signal_list=""
 
@@ -1382,34 +1419,47 @@ SUMEOF
   _save_state "complete"
 
   # ── Terminal Summary ──
-  echo ""
-  echo "================================================================"
-  echo "  TRAKTR SCAN COMPLETE"
-  echo "================================================================"
-  echo "  Target:     $TARGET"
-  echo "  Duration:   ${duration}s | Requests: ${REQUEST_COUNT}"
-  echo "  Endpoints:  ${total_endpoints}"
-  echo "  Parameters: ${total_params}"
-  echo ""
+  local dur_min=$(( duration / 60 )) dur_sec=$(( duration % 60 ))
+  printf '\n' >&2
+  printf '\033[1;36m  ╔══════════════════════════════════════════════════════════╗\033[0m\n' >&2
+  printf '\033[1;36m  ║           TRAKTR SCAN COMPLETE                          ║\033[0m\n' >&2
+  printf '\033[1;36m  ╚══════════════════════════════════════════════════════════╝\033[0m\n' >&2
+  printf '  Target:     %s\n' "$TARGET" >&2
+  printf '  Duration:   %dm %ds | Requests: %s\n' "$dur_min" "$dur_sec" "${REQUEST_COUNT}" >&2
+  printf '  Endpoints:  %s | Parameters: %s\n' "${total_endpoints}" "${total_params}" >&2
+  printf '  WAF:        %s | Framework: %s\n' "${WAF_DETECTED}" "${FRAMEWORK}" >&2
+  printf '\n' >&2
+
   if [[ "$total_findings" -gt 0 ]]; then
     local high; high=$(jq '[.[] | select(.confidence == "HIGH")] | length' "$findings" 2>/dev/null || echo 0)
     local med; med=$(jq '[.[] | select(.confidence == "MEDIUM")] | length' "$findings" 2>/dev/null || echo 0)
     local low; low=$(jq '[.[] | select(.confidence == "LOW")] | length' "$findings" 2>/dev/null || echo 0)
-    echo "  Findings:   $total_findings (HIGH:$high MED:$med LOW:$low)"
+    printf '  \033[1;31mFindings: %s\033[0m  (HIGH:%s  MED:%s  LOW:%s)\n\n' "$total_findings" "$high" "$med" "$low" >&2
+    # Show each finding inline
+    jq -r '.[] | "\(.confidence)|\(.type)|\(.url // .matched_at // "N/A")|\(.param // "N/A")|\(.proof // .detail // "N/A")|\(.curl // "N/A")"' \
+      "$findings" 2>/dev/null | while IFS='|' read -r conf ftype furl fparam fproof fcurl; do
+        local color='\033[1;33m'  # yellow default
+        [[ "$conf" == "HIGH" ]] && color='\033[1;31m'  # red
+        [[ "$conf" == "LOW" ]] && color='\033[2m'       # dim
+        printf "  ${color}[%s] %s\033[0m\n" "$conf" "$ftype" >&2
+        printf '    URL:   %s\n' "$furl" >&2
+        [[ "$fparam" != "N/A" ]] && printf '    Param: %s\n' "$fparam" >&2
+        [[ "$fproof" != "N/A" ]] && printf '    Proof: \033[1;32m%s\033[0m\n' "$fproof" >&2
+        printf '    PoC:   \033[2m%s\033[0m\n\n' "$fcurl" >&2
+      done
   else
-    echo "  Findings:   0"
+    printf '  Findings:   0\n\n' >&2
   fi
-  echo "  Secrets:    ${total_secrets}"
-  echo "  WAF:        ${WAF_DETECTED} | Framework: ${FRAMEWORK}"
-  echo "----------------------------------------------------------------"
-  echo "  Report:     ${OUTDIR}/REPORT.md"
-  [[ -f "${OUTDIR}/REPORT.html" ]] && echo "  HTML:       ${OUTDIR}/REPORT.html" || true
-  echo "  Findings:   ${OUTDIR}/findings.json"
-  echo "  PoC cmds:   ${OUTDIR}/poc_commands.txt"
-  echo "  Secrets:    ${OUTDIR}/secrets.json"
-  echo "  Params:     ${OUTDIR}/active_params.txt"
-  echo "  Full log:   ${LOGFILE}"
-  echo "================================================================"
+
+  [[ "$total_secrets" -gt 0 ]] && printf '  \033[1;31mSecrets: %s detected!\033[0m\n' "$total_secrets" >&2 || true
+  printf '\033[2m  ──────────────────────────────────────────────────────────\033[0m\n' >&2
+  printf '  Report:     %s\n' "${OUTDIR}/REPORT.md" >&2
+  [[ -f "${OUTDIR}/REPORT.html" ]] && printf '  HTML:       %s\n' "${OUTDIR}/REPORT.html" >&2 || true
+  printf '  Findings:   %s\n' "${OUTDIR}/findings.json" >&2
+  printf '  PoC cmds:   %s\n' "${OUTDIR}/poc_commands.txt" >&2
+  printf '  Params:     %s\n' "${OUTDIR}/active_params.txt" >&2
+  printf '  Full log:   %s\n' "${LOGFILE}" >&2
+  printf '\033[2m  ──────────────────────────────────────────────────────────\033[0m\n' >&2
 
   _json_event "scan_complete" "{\"duration\":$duration,\"findings\":$total_findings,\"secrets\":$total_secrets}"
 }

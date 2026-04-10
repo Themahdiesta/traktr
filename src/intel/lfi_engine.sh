@@ -196,6 +196,9 @@ detect_lfi() {
       local resp_status resp_size resp_time
       IFS='|' read -r resp_status resp_size resp_time <<< "$metrics"
 
+      # Skip if curl failed entirely (000 = connection error)
+      [[ "$resp_status" == "000" ]] && { rm -f "$resp_file"; ((consecutive_misses++)) || true; continue; }
+
       # Multi-signal check
       local signals=0 signal_list=""
 
@@ -219,8 +222,8 @@ detect_lfi() {
         [[ "$slow" == "1" ]] && { ((signals++)) || true; signal_list+="time_delta,"; }
       fi
 
-      # Signal D: Status change
-      if [[ "$resp_status" != "$baseline_status" ]]; then
+      # Signal D: Status change (ignore 000 = curl failure/timeout)
+      if [[ "$resp_status" != "$baseline_status" ]] && [[ "$resp_status" != "000" ]]; then
         ((signals++)) || true
         signal_list+="status_change(${baseline_status}->${resp_status}),"
       fi
