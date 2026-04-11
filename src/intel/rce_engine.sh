@@ -10,6 +10,10 @@
 #  MASTER RCE ESCALATION — called after LFI/SQLi/Upload findings
 # ═══════════════════════════════════════════════════════════════════════════
 rce_escalate() {
+  # Disable set -e for entire RCE engine — chains are expected to fail
+  local _old_opts; _old_opts=$(set +o); set +e
+  trap "eval \"\$_old_opts\"" RETURN 2>/dev/null || true
+
   local outdir="${1:-${OUTDIR:-/tmp}}"
   local target="${TARGET:-unknown}"
   local oscp="${OSCP:-false}"

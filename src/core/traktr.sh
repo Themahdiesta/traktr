@@ -839,7 +839,8 @@ step4_params() {
       fi
       # Real-time: show new params as they're discovered
       local _live_count
-      _live_count=$(cat "${OUTDIR}"/params_*.txt 2>/dev/null | grep -c '|' 2>/dev/null || echo 0)
+      _live_count=$(cat "${OUTDIR}"/params_*.txt 2>/dev/null | grep -c '|' || true)
+      _live_count="${_live_count:-0}"
       if [[ "$_live_count" -gt "$_last_param_count" ]]; then
         local _new_lines
         _new_lines=$(( _live_count - _last_param_count ))
@@ -1543,7 +1544,7 @@ step5_5_rce_escalation() {
 
   if declare -f rce_escalate &>/dev/null; then
     : > "${OUTDIR}/vuln/rce.json"
-    rce_escalate "$OUTDIR"
+    rce_escalate "$OUTDIR" || _warn "RCE engine returned non-zero (some chains may have failed)"
 
     # Merge RCE findings into main findings
     if [[ -f "${OUTDIR}/vuln/rce.json" ]] && [[ -s "${OUTDIR}/vuln/rce.json" ]]; then
@@ -1835,76 +1836,146 @@ SUMEOF
 
   # ── Terminal Summary ──
   local dur_min=$(( duration / 60 )) dur_sec=$(( duration % 60 ))
-  printf '\n' >&2
-  printf '\033[1;36m  ╔══════════════════════════════════════════════════════════╗\033[0m\n' >&2
-  printf '\033[1;36m  ║           TRAKTR SCAN COMPLETE                          ║\033[0m\n' >&2
-  printf '\033[1;36m  ╚══════════════════════════════════════════════════════════╝\033[0m\n' >&2
-  printf '  Target:     %s\n' "$TARGET" >&2
-  printf '  Duration:   %dm %ds | Requests: %s\n' "$dur_min" "$dur_sec" "${REQUEST_COUNT}" >&2
-  printf '  Endpoints:  %s | Parameters: %s\n' "${total_endpoints}" "${total_params}" >&2
-  printf '  WAF:        %s | Framework: %s\n' "${WAF_DETECTED}" "${FRAMEWORK}" >&2
-  printf '\n' >&2
+  local high; high=$(jq '[.[] | select(.confidence == "HIGH")] | length' "$findings" 2>/dev/null || echo 0)
+  local med; med=$(jq '[.[] | select(.confidence == "MEDIUM")] | length' "$findings" 2>/dev/null || echo 0)
+  local low; low=$(jq '[.[] | select(.confidence == "LOW")] | length' "$findings" 2>/dev/null || echo 0)
+  local rce_count=0
+  [[ -f "${OUTDIR}/vuln/rce.json" ]] && rce_count=$(wc -l < "${OUTDIR}/vuln/rce.json" 2>/dev/null || echo 0)
 
+  printf '\n' >&2
+  printf '\033[1;36m  ╔══════════════════════════════════════════════════════════════╗\033[0m\n' >&2
+  printf '\033[1;36m  ║                    TRAKTR SCAN COMPLETE                      ║\033[0m\n' >&2
+  printf '\033[1;36m  ╠══════════════════════════════════════════════════════════════╣\033[0m\n' >&2
+  printf '\033[1;36m  ║\033[0m  Target:    %-48s\033[1;36m║\033[0m\n' "$TARGET" >&2
+  printf '\033[1;36m  ║\033[0m  Duration:  %dm %ds  │  Requests: %-24s\033[1;36m║\033[0m\n' "$dur_min" "$dur_sec" "${REQUEST_COUNT}" >&2
+  printf '\033[1;36m  ║\033[0m  WAF: %-8s Framework: %-8s Mode: %-17s\033[1;36m║\033[0m\n' "${WAF_DETECTED}" "${FRAMEWORK}" "$([[ "$OSCP" == true ]] && echo "OSCP-Safe" || echo "Standard")" >&2
+  printf '\033[1;36m  ╠══════════════════════════════════════════════════════════════╣\033[0m\n' >&2
+  printf '\033[1;36m  ║\033[0m  Endpoints: \033[1;37m%-6s\033[0m  Parameters: \033[1;37m%-6s\033[0m  Secrets: \033[1;37m%-8s\033[0m\033[1;36m║\033[0m\n' "${total_endpoints}" "${total_params}" "${total_secrets}" >&2
+  printf '\033[1;36m  ║\033[0m  Findings:  \033[1;31m%-6s\033[0m  HIGH: \033[1;31m%-5s\033[0m MED: \033[1;33m%-5s\033[0m LOW: \033[2m%-5s\033[0m\033[1;36m║\033[0m\n' "${total_findings}" "${high}" "${med}" "${low}" >&2
+  [[ "$rce_count" -gt 0 ]] && printf '\033[1;36m  ║\033[0m  \033[1;31m★ RCE CHAINS: %-47s\033[0m\033[1;36m║\033[0m\n' "${rce_count} achieved!" >&2
+  printf '\033[1;36m  ╚══════════════════════════════════════════════════════════════╝\033[0m\n' >&2
+
+  # ── Findings Detail ──
   if [[ "$total_findings" -gt 0 ]]; then
-    local high; high=$(jq '[.[] | select(.confidence == "HIGH")] | length' "$findings" 2>/dev/null || echo 0)
-    local med; med=$(jq '[.[] | select(.confidence == "MEDIUM")] | length' "$findings" 2>/dev/null || echo 0)
-    local low; low=$(jq '[.[] | select(.confidence == "LOW")] | length' "$findings" 2>/dev/null || echo 0)
-    printf '  \033[1;31mFindings: %s\033[0m  (HIGH:%s  MED:%s  LOW:%s)\n\n' "$total_findings" "$high" "$med" "$low" >&2
-    # Show each finding inline
-    jq -r '.[] | "\(.confidence)|\(.type)|\(.url // .matched_at // "N/A")|\(.param // "N/A")|\(.proof // .detail // "N/A")|\(.curl // "N/A")"' \
-      "$findings" 2>/dev/null | while IFS='|' read -r conf ftype furl fparam fproof fcurl; do
-        local color='\033[1;33m'  # yellow default
-        [[ "$conf" == "HIGH" ]] && color='\033[1;31m'  # red
-        [[ "$conf" == "LOW" ]] && color='\033[2m'       # dim
-        printf "  ${color}[%s] %s\033[0m\n" "$conf" "$ftype" >&2
-        printf '    URL:   %s\n' "$furl" >&2
-        [[ "$fparam" != "N/A" ]] && printf '    Param: %s\n' "$fparam" >&2
-        [[ "$fproof" != "N/A" ]] && printf '    Proof: \033[1;32m%s\033[0m\n' "$fproof" >&2
-        printf '    PoC:   \033[2m%s\033[0m\n\n' "$fcurl" >&2
+    printf '\n' >&2
+    printf '  \033[1;36m┌─── Findings (%s) ─────────────────────────────────────────\033[0m\n' "$total_findings" >&2
+    printf '  \033[1;36m│ %-8s %-22s %-30s %-10s\033[0m\n' "LEVEL" "TYPE" "URL" "PARAM" >&2
+    printf '  \033[1;36m│ %s\033[0m\n' "──────── ────────────────────── ────────────────────────────── ──────────" >&2
+
+    jq -r '.[] | "\(.confidence // "?")|\(.type // "unknown")|\(.url // .matched_at // "N/A")|\(.param // "-")|\(.proof // .detail // "")|\(.curl // "")"' \
+      "$findings" 2>/dev/null | sort -t'|' -k1,1r | while IFS='|' read -r conf ftype furl fparam fproof fcurl; do
+        local color='\033[1;33m'; local icon="◆"
+        [[ "$conf" == "HIGH" ]] && color='\033[1;31m' && icon="●"
+        [[ "$conf" == "LOW" ]] && color='\033[2m' && icon="○"
+        local short_url="${furl#http*://}"
+        [[ ${#short_url} -gt 28 ]] && short_url="${short_url:0:25}..."
+        printf "  │ ${color}%-8s\033[0m %-22s %-30s %-10s\n" "[${conf}]" "$ftype" "$short_url" "$fparam" >&2
+        [[ -n "$fproof" ]] && [[ "$fproof" != "null" ]] && printf '  │   \033[1;32mProof: %s\033[0m\n' "${fproof:0:80}" >&2
+        [[ -n "$fcurl" ]] && [[ "$fcurl" != "null" ]] && printf '  │   \033[2mPoC: %s\033[0m\n' "${fcurl:0:120}" >&2
       done
-  else
-    printf '  Findings:   0\n\n' >&2
+    printf '  \033[1;36m└──────────────────────────────────────────────────────────────\033[0m\n' >&2
   fi
 
-  [[ "$total_secrets" -gt 0 ]] && printf '  \033[1;31mSecrets: %s detected!\033[0m\n' "$total_secrets" >&2 || true
+  # ── RCE Chain Results ──
+  if [[ -d "${OUTDIR}/rce" ]]; then
+    local src_count; src_count=$(wc -l < "${OUTDIR}/rce/source_files.txt" 2>/dev/null || echo 0)
+    local inc_count; inc_count=$(wc -l < "${OUTDIR}/rce/include_endpoints.txt" 2>/dev/null || echo 0)
+    local upl_count; upl_count=$(wc -l < "${OUTDIR}/rce/upload_endpoints.txt" 2>/dev/null || echo 0)
+    if [[ "$src_count" -gt 0 ]] || [[ "$inc_count" -gt 0 ]] || [[ "$upl_count" -gt 0 ]]; then
+      printf '\n' >&2
+      printf '  \033[1;35m┌─── RCE Intel ─────────────────────────────────────────────\033[0m\n' >&2
+      printf '  \033[1;35m│\033[0m Source files read: %s | Include endpoints: %s | Upload targets: %s\n' "$src_count" "$inc_count" "$upl_count" >&2
+      [[ -s "${OUTDIR}/rce/source_files.txt" ]] && while IFS= read -r sf; do
+        printf '  \033[1;35m│\033[0m   \033[2mSource: %s\033[0m\n' "$sf" >&2
+      done < "${OUTDIR}/rce/source_files.txt"
+      [[ -s "${OUTDIR}/rce/filter_logic.txt" ]] && while IFS='|' read -r fp fl; do
+        printf '  \033[1;35m│\033[0m   \033[1;33mFilter: %s → %s\033[0m\n' "$fp" "$fl" >&2
+      done < "${OUTDIR}/rce/filter_logic.txt"
+      if [[ -f "${OUTDIR}/rce/rce_chain.txt" ]]; then
+        printf '  \033[1;35m│\033[0m \033[1;31m★ RCE CHAIN ACHIEVED\033[0m\n' >&2
+        IFS='|' read -r _rurl _rparam _renc < "${OUTDIR}/rce/rce_chain.txt"
+        printf '  \033[1;35m│\033[0m   URL:   %s\n' "$_rurl" >&2
+        printf '  \033[1;35m│\033[0m   Param: %s\n' "$_rparam" >&2
+        [[ -f "${OUTDIR}/rce/rce_uid.txt" ]] && printf '  \033[1;35m│\033[0m   \033[1;31mID: %s\033[0m\n' "$(cat "${OUTDIR}/rce/rce_uid.txt" 2>/dev/null)" >&2
+      fi
+      if [[ -f "${OUTDIR}/rce/post_exploit.txt" ]]; then
+        printf '  \033[1;35m│\033[0m \033[1;31mPost-Exploitation:\033[0m\n' >&2
+        grep '^FLAG:' "${OUTDIR}/rce/post_exploit.txt" 2>/dev/null | while IFS= read -r flag_line; do
+          printf '  \033[1;35m│\033[0m   \033[1;31m★ %s\033[0m\n' "$flag_line" >&2
+        done
+        grep '^ID:' "${OUTDIR}/rce/post_exploit.txt" 2>/dev/null | head -1 | while IFS= read -r id_line; do
+          printf '  \033[1;35m│\033[0m   %s\n' "$id_line" >&2
+        done
+        grep '^Hostname:' "${OUTDIR}/rce/post_exploit.txt" 2>/dev/null | head -1 | while IFS= read -r h_line; do
+          printf '  \033[1;35m│\033[0m   %s\n' "$h_line" >&2
+        done
+      fi
+      printf '  \033[1;35m└──────────────────────────────────────────────────────────────\033[0m\n' >&2
+    fi
+  fi
 
-  # ── Always list discovered endpoints for manual testing ──
+  [[ "$total_secrets" -gt 0 ]] && {
+    printf '\n  \033[1;31m┌─── Secrets Detected (%s) ────────────────────────────────\033[0m\n' "$total_secrets" >&2
+    jq -r '.[] | "  \033[1;31m│\033[0m  [\(.confidence)] \(.type): \(.value_redacted) in \(.location)"' \
+      "${OUTDIR}/secrets.json" 2>/dev/null | head -10 >&2
+    printf '  \033[1;31m└──────────────────────────────────────────────────────────────\033[0m\n' >&2
+  } || true
+
+  # ── Discovered endpoints ──
   if [[ "$total_endpoints" -gt 0 ]]; then
     printf '\n' >&2
-    printf '  \033[1;36m┌─── Discovered Endpoints (%s) ──────────────────────────\033[0m\n' "$total_endpoints" >&2
+    printf '  \033[1;36m┌─── Discovered Endpoints (%s) ──────────────────────────────\033[0m\n' "$total_endpoints" >&2
     head -30 "${OUTDIR}/all_endpoints_paths.txt" 2>/dev/null | while IFS= read -r ep; do
       printf '  \033[2m│ %s\033[0m\n' "$ep" >&2
     done
     [[ "$total_endpoints" -gt 30 ]] && printf '  \033[2m│ ... and %d more (see all_endpoints.txt)\033[0m\n' "$((total_endpoints - 30))" >&2
-    printf '  \033[1;36m└──────────────────────────────────────────────────────\033[0m\n' >&2
+    printf '  \033[1;36m└──────────────────────────────────────────────────────────────\033[0m\n' >&2
   fi
 
-  # ── Always list discovered parameters for manual testing ──
+  # ── Discovered parameters ──
   if [[ "$total_params" -gt 0 ]]; then
     printf '\n' >&2
-    printf '  \033[1;36m┌─── Discovered Parameters (%s) ─────────────────────────\033[0m\n' "$total_params" >&2
+    printf '  \033[1;36m┌─── Discovered Parameters (%s) ─────────────────────────────\033[0m\n' "$total_params" >&2
     printf '  \033[1;36m│ %-45s %-15s %-8s %s\033[0m\n' "ENDPOINT" "PARAM" "METHOD" "SOURCE" >&2
+    printf '  \033[1;36m│ %s\033[0m\n' "───────────────────────────────────────────── ─────────────── ──────── ──────────" >&2
     head -30 "${OUTDIR}/active_params.txt" 2>/dev/null | while IFS='|' read -r p_url p_param p_source p_method _; do
       [[ -z "$p_param" ]] && continue
       local short_url="${p_url#http*://}"
       [[ ${#short_url} -gt 43 ]] && short_url="${short_url:0:40}..."
       local tag=""
-      echo "$p_param" | grep -qiE 'file|path|page|include|template|doc|load|read|dir|resource' && tag=" [LFI?]"
-      echo "$p_param" | grep -qiE 'redirect|redir|next|return|goto|callback|dest|url' && tag=" [REDIR?]"
-      echo "$p_param" | grep -qiE '^id$|user|email|name|password|token|key|secret|admin' && tag=" [IDOR?]"
-      printf '  │ %-45s \033[1;32m%-15s\033[0m %-8s %s%s\n' "$short_url" "$p_param" "${p_method:-GET}" "${p_source:-?}" "$tag" >&2
+      echo "$p_param" | grep -qiE 'file|path|page|include|template|doc|load|read|dir|resource' && tag=" \033[1;31m[LFI?]\033[0m"
+      echo "$p_param" | grep -qiE 'redirect|redir|next|return|goto|callback|dest|url' && tag=" \033[1;33m[REDIR?]\033[0m"
+      echo "$p_param" | grep -qiE '^id$|user|email|name|password|token|key|secret|admin' && tag=" \033[1;36m[IDOR?]\033[0m"
+      printf "  │ %-45s \033[1;32m%-15s\033[0m %-8s %s${tag}\n" "$short_url" "$p_param" "${p_method:-GET}" "${p_source:-?}" >&2
     done
     [[ "$total_params" -gt 30 ]] && printf '  \033[2m│ ... and %d more (see active_params.txt)\033[0m\n' "$((total_params - 30))" >&2
-    printf '  \033[1;36m└──────────────────────────────────────────────────────\033[0m\n' >&2
+    printf '  \033[1;36m└──────────────────────────────────────────────────────────────\033[0m\n' >&2
   fi
-  printf '\033[2m  ──────────────────────────────────────────────────────────\033[0m\n' >&2
+
+  # ── LFI Reads (if any) ──
+  if [[ -d "${OUTDIR}/lfi_reads" ]] && [[ "$(ls -A "${OUTDIR}/lfi_reads" 2>/dev/null)" ]]; then
+    local lfi_file_count; lfi_file_count=$(ls -1 "${OUTDIR}/lfi_reads" 2>/dev/null | wc -l)
+    printf '\n' >&2
+    printf '  \033[1;33m┌─── LFI Extracted Files (%s) ──────────────────────────────\033[0m\n' "$lfi_file_count" >&2
+    ls -1 "${OUTDIR}/lfi_reads" 2>/dev/null | while IFS= read -r lf; do
+      local lf_size; lf_size=$(wc -c < "${OUTDIR}/lfi_reads/${lf}" 2>/dev/null || echo 0)
+      local lf_name="${lf%.txt}"
+      lf_name="${lf_name//_//}"
+      printf '  \033[1;33m│\033[0m  /%s \033[2m(%s bytes)\033[0m\n' "$lf_name" "$lf_size" >&2
+    done
+    printf '  \033[1;33m└──────────────────────────────────────────────────────────────\033[0m\n' >&2
+  fi
+
+  # ── Output files ──
+  printf '\n\033[2m  ──────────────────────────────────────────────────────────────\033[0m\n' >&2
+  printf '  \033[1;37mOutput Files:\033[0m\n' >&2
   printf '  Report:     %s\n' "${OUTDIR}/REPORT.md" >&2
   [[ -f "${OUTDIR}/REPORT.html" ]] && printf '  HTML:       %s\n' "${OUTDIR}/REPORT.html" >&2 || true
   printf '  Findings:   %s\n' "${OUTDIR}/findings.json" >&2
   printf '  PoC cmds:   %s\n' "${OUTDIR}/poc_commands.txt" >&2
   printf '  Params:     %s\n' "${OUTDIR}/active_params.txt" >&2
-  printf '  Full log:   %s\n' "${LOGFILE}" >&2
-  printf '\033[2m  ──────────────────────────────────────────────────────────\033[0m\n' >&2
+  [[ -n "${LOGFILE:-}" ]] && printf '  Full log:   %s\n' "${LOGFILE}" >&2 || true
+  printf '\033[2m  ──────────────────────────────────────────────────────────────\033[0m\n' >&2
 
   _json_event "scan_complete" "{\"duration\":$duration,\"findings\":$total_findings,\"secrets\":$total_secrets}"
 }
