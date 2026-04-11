@@ -1,14 +1,15 @@
 #!/usr/bin/env bash
-# TRAKTR Installer v2.0 -- Installs all dependencies, tools, payloads, wordlists
-# Usage: ./installer.sh [--dry-run] [--repair] [--upgrade]
+# TRAKTR Installer v2.2 -- Installs all dependencies, tools, payloads, wordlists
+# Usage: ./installer.sh [--dry-run] [--repair] [--upgrade] [--check]
+# Works on fresh Kali minimal: curl -fsSL .../install.sh | bash
 set -euo pipefail
 
 TRAKTR_HOME="${HOME}/.traktr"
 TRAKTR_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 LOG_FILE="${TRAKTR_ROOT}/logs/install.log"
-GO_VERSION="1.22.2"
+GO_MIN_VERSION="1.21.0"
 INSTALLED=0; SKIPPED=0; FAILED=0
-DRY_RUN=false; REPAIR=false; UPGRADE=false
+DRY_RUN=false; REPAIR=false; UPGRADE=false; CHECK_ONLY=false
 
 # ── Flags ────────────────────────────────────────────────────────────────────
 for arg in "$@"; do
@@ -16,7 +17,8 @@ for arg in "$@"; do
     --dry-run) DRY_RUN=true ;;
     --repair)  REPAIR=true ;;
     --upgrade) UPGRADE=true ;;
-    -h|--help) echo "Usage: installer.sh [--dry-run] [--repair] [--upgrade]"; exit 0 ;;
+    --check)   CHECK_ONLY=true ;;
+    -h|--help) echo "Usage: installer.sh [--dry-run] [--repair] [--upgrade] [--check]"; exit 0 ;;
     *) echo "[!] Unknown flag: $arg"; exit 1 ;;
   esac
 done
@@ -29,35 +31,40 @@ ok()   { log "  [+] $1"; }
 warn() { log "  [!] $1"; }
 fail() { log "  [-] $1"; }
 
+# SUDO_PREFIX is set in main() — empty when root, "sudo" otherwise.
+SUDO_PREFIX="sudo"
+
+# run: execute a command with args, redirect output to log.
 run() {
   if $DRY_RUN; then log "  [DRY-RUN] $*"; return 0; fi
   "$@" >> "$LOG_FILE" 2>&1
 }
 
-# run_cmd: like run() but takes a single string and evaluates it via the shell.
-# Use for commands stored in variables (e.g. "$PKG_INSTALL $dep").
+# run_cmd: execute a command string via eval (needed when the command is stored
+# in a variable like "$PKG_INSTALL $dep" — quoting prevents word splitting).
 run_cmd() {
   if $DRY_RUN; then log "  [DRY-RUN] $1"; return 0; fi
   eval "$1" >> "$LOG_FILE" 2>&1
 }
 
-# retry_cmd: like retry() but for shell command strings (uses run_cmd).
+# retry: retry a command (positional args) up to $1 times.
+retry() {
+  local max=$1 delay=3; shift
+  for attempt in $(seq 1 "$max"); do
+    if run "$@"; then return 0; fi
+    warn "Attempt $attempt/$max failed: $*"
+    sleep "$delay"; delay=$((delay * 2))
+  done
+  return 1
+}
+
+# retry_cmd: retry a command string up to $1 times.
 retry_cmd() {
   local max=$1 delay=3; shift
   local cmd="$1"
   for attempt in $(seq 1 "$max"); do
     if run_cmd "$cmd"; then return 0; fi
     warn "Attempt $attempt/$max failed: $cmd"
-    sleep "$delay"; delay=$((delay * 2))
-  done
-  return 1
-}
-
-retry() {
-  local max=$1 delay=3; shift
-  for attempt in $(seq 1 "$max"); do
-    if run "$@"; then return 0; fi
-    warn "Attempt $attempt/$max failed: $*"
     sleep "$delay"; delay=$((delay * 2))
   done
   return 1
@@ -81,10 +88,6 @@ tool_install() {
 
 # ── Detect OS & Package Manager ─────────────────────────────────────────────
 detect_os() {
-  # Skip sudo prefix when already running as root
-  local SUDO_PREFIX="sudo"
-  [[ "$EUID" -eq 0 ]] && SUDO_PREFIX=""
-
   if [ -f /etc/os-release ]; then
     . /etc/os-release
     case "$ID" in
@@ -106,6 +109,10 @@ detect_os() {
 # ── Step 1: System Dependencies ─────────────────────────────────────────────
 install_system_deps() {
   log "[*] Step 1: System dependencies"
+  # Update package index first so installs don't fail on stale cache
+  log "  [~] Updating package index..."
+  run_cmd "$SUDO_PREFIX apt-get update -qq" || warn "apt-get update failed (continuing anyway)"
+
   for dep in jq curl git wget chromium python3 pip; do
     local check="$dep"
     [[ "$dep" == "pip" ]] && check="pip3"
@@ -124,15 +131,32 @@ install_system_deps() {
 
 # ── Step 2: Go ───────────────────────────────────────────────────────────────
 install_go() {
-  log "[*] Step 2: Go ${GO_VERSION}"
-  # Also check /usr/local/go/bin in case it's not yet in PATH
+  log "[*] Step 2: Go (>= ${GO_MIN_VERSION})"
   export PATH="/usr/local/go/bin:${HOME}/go/bin:$PATH"
+
+  # Check if Go is already installed and meets minimum version
   if has_tool go && ! $REPAIR; then
-    local cur; cur=$(go version | sed 's/.*go\([0-9.]*\).*/\1/')
-    if [[ "$(printf '%s\n' "$GO_VERSION" "$cur" | sort -V | head -1)" == "$GO_VERSION" ]]; then
-      ok "Go $cur >= $GO_VERSION"; ((SKIPPED++)) || true; return 0
+    local cur; cur=$(go version | sed 's/.*go\([0-9][0-9.]*\).*/\1/')
+    if [[ -n "$cur" ]] && [[ "$(printf '%s\n' "$GO_MIN_VERSION" "$cur" | sort -V | head -1)" == "$GO_MIN_VERSION" ]]; then
+      ok "Go $cur >= $GO_MIN_VERSION ($(command -v go))"; ((SKIPPED++)) || true; return 0
     fi
   fi
+
+  # Prefer system package manager (Kali ships golang-go)
+  log "  [~] Installing Go via package manager..."
+  if retry_cmd 2 "$SUDO_PREFIX apt-get install -y golang-go 2>/dev/null || $SUDO_PREFIX apt-get install -y golang 2>/dev/null"; then
+    export PATH="/usr/local/go/bin:${HOME}/go/bin:$PATH"
+    if has_tool go; then
+      local ver; ver=$(go version | sed 's/.*go\([0-9][0-9.]*\).*/\1/')
+      ok "Go $ver installed via package manager"
+      ((INSTALLED++)) || true; return 0
+    fi
+  fi
+
+  # Fallback: download from go.dev — fetch latest stable version dynamically
+  local dl_version
+  dl_version=$(curl -fsSL https://go.dev/VERSION?m=text 2>/dev/null | head -1 | sed 's/^go//') || dl_version="1.22.2"
+  log "  [~] Package manager Go unavailable, downloading Go ${dl_version}..."
   local arch; arch=$(uname -m)
   case "$arch" in
     x86_64)  arch="amd64" ;;
@@ -140,59 +164,81 @@ install_go() {
     armv*)   arch="armv6l" ;;
   esac
   local os; os=$(uname -s | tr '[:upper:]' '[:lower:]')
-  local tarball="go${GO_VERSION}.${os}-${arch}.tar.gz"
+  local tarball="go${dl_version}.${os}-${arch}.tar.gz"
   local url="https://go.dev/dl/${tarball}"
   log "  [~] Downloading $url"
   if $DRY_RUN; then log "  [DRY-RUN] Download + extract Go"; return 0; fi
   retry 3 wget -q -O "/tmp/$tarball" "$url"
-  if [[ "$EUID" -eq 0 ]]; then
-    rm -rf /usr/local/go
-    tar -C /usr/local -xzf "/tmp/$tarball"
-  else
-    sudo rm -rf /usr/local/go
-    sudo tar -C /usr/local -xzf "/tmp/$tarball"
-  fi
+  run_cmd "$SUDO_PREFIX rm -rf /usr/local/go"
+  run_cmd "$SUDO_PREFIX tar -C /usr/local -xzf /tmp/$tarball"
   rm -f "/tmp/$tarball"
-  # Ensure GOPATH dir is owned by the current user
-  mkdir -p "${HOME}/go/bin" "${HOME}/go/pkg" 2>/dev/null || true
+  export PATH="/usr/local/go/bin:${HOME}/go/bin:$PATH"
+
+  # Ensure PATH is persisted in shell rc files
   # shellcheck disable=SC2016
-  if ! grep -q '/usr/local/go/bin' "${HOME}/.bashrc" 2>/dev/null; then
-    echo 'export PATH="/usr/local/go/bin:${HOME}/go/bin:$PATH"' >> "${HOME}/.bashrc"
-  fi
-  # shellcheck disable=SC2016
-  if ! grep -q '/usr/local/go/bin' "${HOME}/.zshrc" 2>/dev/null; then
-    echo 'export PATH="/usr/local/go/bin:${HOME}/go/bin:$PATH"' >> "${HOME}/.zshrc"
-  fi
-  ok "Go $(go version | sed 's/.*go\([0-9.]*\).*/\1/') installed"
+  for rc in "${HOME}/.bashrc" "${HOME}/.zshrc"; do
+    if [[ -f "$rc" ]] && ! grep -q '/usr/local/go/bin' "$rc" 2>/dev/null; then
+      echo 'export PATH="/usr/local/go/bin:${HOME}/go/bin:$PATH"' >> "$rc"
+    fi
+  done
+
+  ok "Go $(go version | sed 's/.*go\([0-9][0-9.]*\).*/\1/') installed"
   ((INSTALLED++)) || true
+}
+
+# ── GOPATH ownership guard ──────────────────────────────────────────────────
+fix_gopath() {
+  local gopath="${HOME}/go"
+  mkdir -p "$gopath/bin" "$gopath/pkg/mod" 2>/dev/null || true
+
+  if [[ -d "$gopath" && ! -w "$gopath" ]]; then
+    warn "${gopath} is not writable (likely root-owned from a previous install)"
+    log "  [~] Fixing ownership: $SUDO_PREFIX chown -R $USER ${gopath}"
+    if run_cmd "$SUDO_PREFIX chown -R $USER:$(id -gn) $gopath"; then
+      ok "GOPATH ownership fixed"
+    else
+      fail "Cannot fix ${gopath} permissions. Run manually: sudo chown -R \$USER:\$USER ${gopath}"
+      return 1
+    fi
+  fi
+
+  # Also check subdirs — the top dir might be writable but children aren't
+  if [[ -d "$gopath/pkg" && ! -w "$gopath/pkg" ]]; then
+    run_cmd "$SUDO_PREFIX chown -R $USER:$(id -gn) $gopath" 2>/dev/null || true
+  fi
+
+  # Final write test
+  if ! touch "$gopath/pkg/.traktr_test" 2>/dev/null; then
+    fail "GOPATH ${gopath} is still not writable after fix attempt"
+    fail "Run manually: sudo chown -R \$USER:\$USER ${gopath}"
+    return 1
+  fi
+  rm -f "$gopath/pkg/.traktr_test"
+  ok "GOPATH ${gopath} is writable"
 }
 
 # ── Step 3: Go Tools ────────────────────────────────────────────────────────
 install_go_tools() {
   log "[*] Step 3: Go-based tools"
   export PATH="/usr/local/go/bin:${HOME}/go/bin:$PATH"
-  # Ensure GOPATH directories exist and are writable
-  if [[ -d "${HOME}/go" && ! -w "${HOME}/go" ]]; then
-    warn "${HOME}/go is not writable (wrong ownership). Attempting fix..."
-    if [[ "$EUID" -eq 0 ]]; then
-      chown -R "$(logname 2>/dev/null || echo "$USER"):$(id -gn)" "${HOME}/go"
-    else
-      sudo chown -R "$USER:$(id -gn)" "${HOME}/go" 2>/dev/null || true
-    fi
-  fi
-  mkdir -p "${HOME}/go/bin" "${HOME}/go/pkg/mod" 2>/dev/null || {
-    fail "Cannot create ${HOME}/go directories. Fix with: sudo chown -R \$USER:\$USER ${HOME}/go"
+
+  # Guard: ensure GOPATH is usable before trying any go install
+  if ! fix_gopath; then
+    fail "Skipping Go tools — GOPATH is broken"
     return 1
-  }
+  fi
+
+  # Pinned versions — update intentionally after testing compatibility.
+  # To check for newer versions: go list -m -versions <module>
   declare -A GO_TOOLS=(
-    [katana]="github.com/projectdiscovery/katana/cmd/katana@latest"
-    [ffuf]="github.com/ffuf/ffuf/v2@latest"
-    [nuclei]="github.com/projectdiscovery/nuclei/v3/cmd/nuclei@latest"
-    [httpx]="github.com/projectdiscovery/httpx/cmd/httpx@latest"
-    [gau]="github.com/lc/gau/v2/cmd/gau@latest"
-    [subfinder]="github.com/projectdiscovery/subfinder/v2/cmd/subfinder@latest"
-    [waybackurls]="github.com/tomnomnom/waybackurls@latest"
-    [dalfox]="github.com/hahwul/dalfox/v2@latest"
+    [katana]="github.com/projectdiscovery/katana/cmd/katana@v1.1.0"
+    [ffuf]="github.com/ffuf/ffuf/v2@v2.1.0"
+    [nuclei]="github.com/projectdiscovery/nuclei/v3/cmd/nuclei@v3.3.7"
+    [httpx]="github.com/projectdiscovery/httpx/cmd/httpx@v1.6.9"
+    [gau]="github.com/lc/gau/v2/cmd/gau@v2.2.3"
+    [subfinder]="github.com/projectdiscovery/subfinder/v2/cmd/subfinder@v2.6.7"
+    [waybackurls]="github.com/tomnomnom/waybackurls@v0.1.0"
+    [dalfox]="github.com/hahwul/dalfox/v2@v2.9.3"
   )
   for tool in "${!GO_TOOLS[@]}"; do
     # httpx: Kali ships Python httpx at /usr/bin/httpx; we need ProjectDiscovery's Go version
@@ -536,6 +582,77 @@ verify_all() {
   ok "Traktr is ready. Run: traktr <target>"
 }
 
+# ── Health Check (--check) ───────────────────────────────────────────────────
+# Validates that each tool responds to --version/-h and prints a pass/fail grid.
+health_check() {
+  log ""
+  log "╔══════════════════════════════════════════════════════════╗"
+  log "║               TRAKTR Health Check                       ║"
+  log "╠═══════════════════╦═══════════════╦══════════════════════╣"
+  log "║ Tool              ║ Responds?     ║ Detail               ║"
+  log "╠═══════════════════╬═══════════════╬══════════════════════╣"
+
+  export PATH="/usr/local/go/bin:${HOME}/go/bin:${HOME}/.local/bin:$PATH"
+  local total=0 pass=0 missing=0 broken=0
+
+  # Each entry: tool_name:test_command
+  local checks=(
+    "katana:katana -version"
+    "ffuf:ffuf -V"
+    "nuclei:nuclei -version"
+    "httpx:httpx -version"
+    "gau:gau -version"
+    "subfinder:subfinder -version"
+    "waybackurls:echo url | waybackurls"
+    "dalfox:dalfox version"
+    "arjun:arjun --help"
+    "commix:commix --version"
+    "feroxbuster:feroxbuster --help"
+    "jq:jq --version"
+    "curl:curl --version"
+    "git:git --version"
+    "go:go version"
+  )
+
+  for entry in "${checks[@]}"; do
+    local tool="${entry%%:*}"
+    local cmd="${entry#*:}"
+    ((total++)) || true
+    local status="MISSING" detail="not found in PATH"
+
+    if has_tool "$tool"; then
+      if eval "$cmd" &>/dev/null; then
+        status="PASS"
+        detail=$(eval "$cmd" 2>&1 | grep -oP '[0-9]+\.[0-9]+(\.[0-9]+)?' | head -1) || detail="ok"
+        [[ -z "$detail" ]] && detail="ok"
+        ((pass++)) || true
+      else
+        status="BROKEN"
+        detail="found but command failed"
+        ((broken++)) || true
+      fi
+    else
+      ((missing++)) || true
+    fi
+    printf "║ %-17s ║ %-13s ║ %-20s ║\n" "$tool" "$status" "$detail" | tee -a "$LOG_FILE"
+  done
+
+  log "╚══════════════════════════════════════════════════════════╝"
+  log ""
+  log "[*] Health: $pass/$total pass | $missing missing | $broken broken"
+
+  if [[ "$broken" -gt 0 ]]; then
+    warn "Some tools are installed but not responding correctly."
+    warn "Run with --repair to reinstall broken tools."
+    return 1
+  fi
+  if [[ "$missing" -gt 0 ]]; then
+    warn "Some tools are missing. Run the installer to install them."
+    return 1
+  fi
+  ok "All tools healthy."
+}
+
 # ── Banner ───────────────────────────────────────────────────────────────────
 banner() {
   cat << 'EOF'
@@ -545,7 +662,7 @@ banner() {
     |    |   |  | \// __ \|    < |  |  |  | \/
     |____|   |__|  (____  |__|_ \|__|  |__|
                         \/     \/
-       ~ plowing the web ~  INSTALLER v2.0
+       ~ plowing the web ~  INSTALLER v2.2
              <3 By @mahdiesta
 EOF
 }
@@ -553,26 +670,41 @@ EOF
 # ── Main ─────────────────────────────────────────────────────────────────────
 main() {
   banner
+
+  # ── --check: health check only, no install ─────────────────────────────
+  if $CHECK_ONLY; then
+    log "[*] Running health check..."
+    health_check
+    return $?
+  fi
+
   log "[*] Traktr Installer started $(date '+%Y-%m-%d %H:%M:%S')"
   $DRY_RUN && log "[*] DRY-RUN MODE: No changes will be made"
   $REPAIR  && log "[*] REPAIR MODE: Reinstalling broken tools"
   $UPGRADE && log "[*] UPGRADE MODE: Updating all tools"
   log ""
 
-  # Warn if running as root — Go tools will be installed to /root/go/bin
-  # which won't be in a normal user's PATH
+  # ── Root guard ──────────────────────────────────────────────────────────
+  # Running as root causes ~/go to be /root/go, Go tools won't be in the
+  # normal user's PATH, and apt calls don't need sudo.
   if [[ "$EUID" -eq 0 ]]; then
-    warn "Running as root. Go tools will install to /root/go/bin."
-    warn "If you normally run as a non-root user, run the installer as that user instead."
+    SUDO_PREFIX=""
+    warn "Running as root — sudo prefix stripped."
+    warn "Go tools will install to /root/go/bin (not in normal user PATH)."
+    warn "Recommendation: run the installer as your normal user instead."
     warn "Continuing in 3 seconds... (Ctrl+C to abort)"
     sleep 3
   else
-    # Cache sudo credentials upfront so later redirected commands don't
-    # swallow the password prompt. This asks for the password once here
-    # (interactively) and caches it for subsequent sudo calls.
+    SUDO_PREFIX="sudo"
+    # ── Cache sudo credentials upfront ──────────────────────────────────
+    # All later sudo calls run inside >> logfile 2>&1 redirects, which
+    # swallows the interactive password prompt. By running sudo -v here
+    # (before any redirection), the user sees the prompt and credentials
+    # are cached for all subsequent calls.
     log "[*] Requesting sudo access (needed for package installs)..."
-    if ! sudo -v 2>/dev/null; then
-      warn "Could not obtain sudo access. Package installs may fail."
+    if ! sudo -v; then
+      warn "Could not obtain sudo. Package installs may fail."
+      warn "Try: sudo -v   (enter your password), then re-run the installer."
     fi
   fi
 

@@ -5,6 +5,8 @@ on:
     branches: [main, develop]
   pull_request:
     branches: [main]
+  schedule:
+    - cron: '0 6 * * 1'  # Weekly Monday 6am UTC
 
 jobs:
   lint:
@@ -18,6 +20,40 @@ jobs:
         run: |
           find src/ -name '*.sh' -exec shellcheck -x -s bash {} +
           shellcheck -x -s bash plugins/example_plugin.sh || true
+
+  install-dryrun:
+    name: Installer Dry-Run
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Syntax check all scripts
+        run: |
+          for f in $(find src/ -name '*.sh'); do
+            bash -n "$f" && echo "OK: $f" || { echo "FAIL: $f"; exit 1; }
+          done
+          bash -n install.sh
+      - name: Dry-run installer
+        run: bash install.sh --dry-run
+
+  install-real:
+    name: Full Install Test
+    runs-on: ubuntu-latest
+    needs: [lint, install-dryrun]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run full installer
+        run: |
+          chmod +x install.sh
+          bash install.sh 2>&1 | tee /tmp/install.log
+        timeout-minutes: 15
+      - name: Health check
+        run: bash src/core/installer.sh --check
+      - name: Upload install log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: install-log
+          path: logs/install.log
 
   test:
     name: Integration Test (DVWA)
@@ -55,11 +91,6 @@ jobs:
           # Test flag parsing (dry-run mode)
           bash src/core/traktr.sh http://localhost:8080 --dry-run || true
           echo "Smoke test completed"
-      - name: Validate script syntax
-        run: |
-          for f in src/**/*.sh; do
-            bash -n "$f" && echo "OK: $f" || echo "FAIL: $f"
-          done
 
   docker:
     name: Docker Build

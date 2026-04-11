@@ -271,6 +271,13 @@ _parse_flags() {
       --dry-run)       export DRY_RUN=true; shift ;;
       -h|--help)       _usage; exit 0 ;;
       -V|--version)    echo "traktr $TRAKTR_VERSION"; exit 0 ;;
+      --check)         bash "${TRAKTR_ROOT}/src/core/installer.sh" --check; exit $? ;;
+      --update)        _log "[*] Updating tools and templates..."
+                       has_tool nuclei && nuclei -update-templates 2>&1 | tail -3
+                       has_tool subfinder && subfinder -up 2>&1 | tail -3
+                       has_tool katana && katana -up 2>&1 | tail -3
+                       has_tool httpx && httpx -up 2>&1 | tail -3
+                       _ok "Update complete"; exit 0 ;;
       -*)              _die "Unknown flag: $1 (try --help)" ;;
       *)               [[ -z "$TARGET" ]] && TARGET="$1"; shift ;;
     esac
@@ -325,6 +332,10 @@ OUTPUT:
   --debug                 Verbose logging
   --resume FILE           Resume from state checkpoint
   --dry-run               Show plan without executing
+
+MAINTENANCE:
+  --check                 Verify all tools respond correctly
+  --update                Update nuclei templates + tool databases
 USAGE
 }
 
