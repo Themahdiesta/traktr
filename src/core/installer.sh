@@ -34,6 +34,25 @@ run() {
   "$@" >> "$LOG_FILE" 2>&1
 }
 
+# run_cmd: like run() but takes a single string and evaluates it via the shell.
+# Use for commands stored in variables (e.g. "$PKG_INSTALL $dep").
+run_cmd() {
+  if $DRY_RUN; then log "  [DRY-RUN] $1"; return 0; fi
+  eval "$1" >> "$LOG_FILE" 2>&1
+}
+
+# retry_cmd: like retry() but for shell command strings (uses run_cmd).
+retry_cmd() {
+  local max=$1 delay=3; shift
+  local cmd="$1"
+  for attempt in $(seq 1 "$max"); do
+    if run_cmd "$cmd"; then return 0; fi
+    warn "Attempt $attempt/$max failed: $cmd"
+    sleep "$delay"; delay=$((delay * 2))
+  done
+  return 1
+}
+
 retry() {
   local max=$1 delay=3; shift
   for attempt in $(seq 1 "$max"); do
@@ -92,7 +111,7 @@ install_system_deps() {
     else
       log "  [~] Installing $dep..."
       if $DRY_RUN; then log "  [DRY-RUN] $PKG_INSTALL $dep"
-      elif retry 2 "$PKG_INSTALL" "$dep"; then ok "$dep installed"; ((INSTALLED++)) || true
+      elif retry_cmd 2 "$PKG_INSTALL $dep"; then ok "$dep installed"; ((INSTALLED++)) || true
       else fail "$dep FAILED"; ((FAILED++)) || true
       fi
     fi
@@ -102,8 +121,10 @@ install_system_deps() {
 # ── Step 2: Go ───────────────────────────────────────────────────────────────
 install_go() {
   log "[*] Step 2: Go ${GO_VERSION}"
+  # Also check /usr/local/go/bin in case it's not yet in PATH
+  export PATH="/usr/local/go/bin:${HOME}/go/bin:$PATH"
   if has_tool go && ! $REPAIR; then
-    local cur; cur=$(go version | grep -oP 'go\K[0-9.]+')
+    local cur; cur=$(go version | sed 's/.*go\([0-9.]*\).*/\1/')
     if [[ "$(printf '%s\n' "$GO_VERSION" "$cur" | sort -V | head -1)" == "$GO_VERSION" ]]; then
       ok "Go $cur >= $GO_VERSION"; ((SKIPPED++)) || true; return 0
     fi
@@ -120,11 +141,16 @@ install_go() {
   log "  [~] Downloading $url"
   if $DRY_RUN; then log "  [DRY-RUN] Download + extract Go"; return 0; fi
   retry 3 wget -q -O "/tmp/$tarball" "$url"
-  sudo rm -rf /usr/local/go
-  sudo tar -C /usr/local -xzf "/tmp/$tarball"
+  if [[ "$EUID" -eq 0 ]]; then
+    rm -rf /usr/local/go
+    tar -C /usr/local -xzf "/tmp/$tarball"
+  else
+    sudo rm -rf /usr/local/go
+    sudo tar -C /usr/local -xzf "/tmp/$tarball"
+  fi
   rm -f "/tmp/$tarball"
-  # Ensure PATH includes go binary dirs
-  export PATH="/usr/local/go/bin:${HOME}/go/bin:$PATH"
+  # Ensure GOPATH dir is owned by the current user
+  mkdir -p "${HOME}/go/bin" "${HOME}/go/pkg" 2>/dev/null || true
   # shellcheck disable=SC2016
   if ! grep -q '/usr/local/go/bin' "${HOME}/.bashrc" 2>/dev/null; then
     echo 'export PATH="/usr/local/go/bin:${HOME}/go/bin:$PATH"' >> "${HOME}/.bashrc"
@@ -133,7 +159,7 @@ install_go() {
   if ! grep -q '/usr/local/go/bin' "${HOME}/.zshrc" 2>/dev/null; then
     echo 'export PATH="/usr/local/go/bin:${HOME}/go/bin:$PATH"' >> "${HOME}/.zshrc"
   fi
-  ok "Go $(go version | grep -oP 'go\K[0-9.]+') installed"
+  ok "Go $(go version | sed 's/.*go\([0-9.]*\).*/\1/') installed"
   ((INSTALLED++)) || true
 }
 
@@ -141,6 +167,19 @@ install_go() {
 install_go_tools() {
   log "[*] Step 3: Go-based tools"
   export PATH="/usr/local/go/bin:${HOME}/go/bin:$PATH"
+  # Ensure GOPATH directories exist and are writable
+  if [[ -d "${HOME}/go" && ! -w "${HOME}/go" ]]; then
+    warn "${HOME}/go is not writable (wrong ownership). Attempting fix..."
+    if [[ "$EUID" -eq 0 ]]; then
+      chown -R "$(logname 2>/dev/null || echo "$USER"):$(id -gn)" "${HOME}/go"
+    else
+      sudo chown -R "$USER:$(id -gn)" "${HOME}/go" 2>/dev/null || true
+    fi
+  fi
+  mkdir -p "${HOME}/go/bin" "${HOME}/go/pkg/mod" 2>/dev/null || {
+    fail "Cannot create ${HOME}/go directories. Fix with: sudo chown -R \$USER:\$USER ${HOME}/go"
+    return 1
+  }
   declare -A GO_TOOLS=(
     [katana]="github.com/projectdiscovery/katana/cmd/katana@latest"
     [ffuf]="github.com/ffuf/ffuf/v2@latest"
@@ -171,7 +210,7 @@ install_pip_tools() {
   # feroxbuster (Rust-based recursive dir scanner, available in Kali repos)
   if ! has_tool feroxbuster; then
     log "  [~] Installing feroxbuster..."
-    if "$PKG_INSTALL" feroxbuster 2>/dev/null; then
+    if run_cmd "$PKG_INSTALL feroxbuster"; then
       ok "feroxbuster installed"
       ((INSTALLED++)) || true
     else
@@ -515,6 +554,15 @@ main() {
   $REPAIR  && log "[*] REPAIR MODE: Reinstalling broken tools"
   $UPGRADE && log "[*] UPGRADE MODE: Updating all tools"
   log ""
+
+  # Warn if running as root — Go tools will be installed to /root/go/bin
+  # which won't be in a normal user's PATH
+  if [[ "$EUID" -eq 0 ]]; then
+    warn "Running as root. Go tools will install to /root/go/bin."
+    warn "If you normally run as a non-root user, run the installer as that user instead."
+    warn "Continuing in 3 seconds... (Ctrl+C to abort)"
+    sleep 3
+  fi
 
   detect_os
   install_system_deps
