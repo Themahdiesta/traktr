@@ -1869,7 +1869,7 @@ SUMEOF
         [[ "$conf" == "LOW" ]] && color='\033[2m' && icon="○"
         local short_url="${furl#http*://}"
         [[ ${#short_url} -gt 28 ]] && short_url="${short_url:0:25}..."
-        printf "  │ ${color}%-8s\033[0m %-22s %-30s %-10s\n" "[${conf}]" "$ftype" "$short_url" "$fparam" >&2
+        printf "  │ ${color}%-8s\033[0m %-22s \033]8;;%s\033\\%-30s\033]8;;\033\\ %-10s\n" "[${conf}]" "$ftype" "$furl" "$short_url" "$fparam" >&2
         [[ -n "$fproof" ]] && [[ "$fproof" != "null" ]] && printf '  │   \033[1;32mProof: %s\033[0m\n' "${fproof:0:80}" >&2
         [[ -n "$fcurl" ]] && [[ "$fcurl" != "null" ]] && printf '  │   \033[2mPoC: %s\033[0m\n' "${fcurl:0:120}" >&2
       done
@@ -1926,7 +1926,11 @@ SUMEOF
     printf '\n' >&2
     printf '  \033[1;36m┌─── Discovered Endpoints (%s) ──────────────────────────────\033[0m\n' "$total_endpoints" >&2
     head -30 "${OUTDIR}/all_endpoints_paths.txt" 2>/dev/null | while IFS= read -r ep; do
-      printf '  \033[2m│ %s\033[0m\n' "$ep" >&2
+      if [[ "$ep" == http* ]]; then
+        printf '  \033[2m│ \033]8;;%s\033\\%s\033]8;;\033\\\033[0m\n' "$ep" "$ep" >&2
+      else
+        printf '  \033[2m│ %s\033[0m\n' "$ep" >&2
+      fi
     done
     [[ "$total_endpoints" -gt 30 ]] && printf '  \033[2m│ ... and %d more (see all_endpoints.txt)\033[0m\n' "$((total_endpoints - 30))" >&2
     printf '  \033[1;36m└──────────────────────────────────────────────────────────────\033[0m\n' >&2
@@ -1966,15 +1970,36 @@ SUMEOF
     printf '  \033[1;33m└──────────────────────────────────────────────────────────────\033[0m\n' >&2
   fi
 
-  # ── Output files ──
+  # ── Quick Links (clickable in terminal) ──
+  # Resolve to absolute path for file:// URLs
+  local _abs_outdir
+  _abs_outdir=$(cd "$OUTDIR" 2>/dev/null && pwd) || _abs_outdir="$OUTDIR"
+
   printf '\n\033[2m  ──────────────────────────────────────────────────────────────\033[0m\n' >&2
-  printf '  \033[1;37mOutput Files:\033[0m\n' >&2
-  printf '  Report:     %s\n' "${OUTDIR}/REPORT.md" >&2
-  [[ -f "${OUTDIR}/REPORT.html" ]] && printf '  HTML:       %s\n' "${OUTDIR}/REPORT.html" >&2 || true
-  printf '  Findings:   %s\n' "${OUTDIR}/findings.json" >&2
-  printf '  PoC cmds:   %s\n' "${OUTDIR}/poc_commands.txt" >&2
-  printf '  Params:     %s\n' "${OUTDIR}/active_params.txt" >&2
-  [[ -n "${LOGFILE:-}" ]] && printf '  Full log:   %s\n' "${LOGFILE}" >&2 || true
+  printf '  \033[1;37m⚡ Quick Links (click to open):\033[0m\n' >&2
+  printf '\n' >&2
+  # Target URL
+  printf '  \033[1;37mTarget:\033[0m     \033]8;;%s\033\\%s\033]8;;\033\\\n' "$TARGET" "$TARGET" >&2
+  # HTML Report (best for browser)
+  if [[ -f "${_abs_outdir}/REPORT.html" ]]; then
+    printf '  \033[1;32mHTML Report:\033[0m \033]8;;file://%s/REPORT.html\033\\\033[4mfile://%s/REPORT.html\033[0m\033]8;;\033\\\n' "$_abs_outdir" "$_abs_outdir" >&2
+  fi
+  # Markdown Report
+  printf '  \033[1;36mMD Report:\033[0m  \033]8;;file://%s/REPORT.md\033\\\033[4m%s/REPORT.md\033[0m\033]8;;\033\\\n' "$_abs_outdir" "$_abs_outdir" >&2
+  # Findings JSON
+  printf '  \033[1;33mFindings:\033[0m   \033]8;;file://%s/findings.json\033\\\033[4m%s/findings.json\033[0m\033]8;;\033\\\n' "$_abs_outdir" "$_abs_outdir" >&2
+  # PoC commands
+  printf '  \033[1;31mPoC cmds:\033[0m   \033]8;;file://%s/poc_commands.txt\033\\\033[4m%s/poc_commands.txt\033[0m\033]8;;\033\\\n' "$_abs_outdir" "$_abs_outdir" >&2
+  # Parameters
+  printf '  \033[1;36mParams:\033[0m     \033]8;;file://%s/active_params.txt\033\\\033[4m%s/active_params.txt\033[0m\033]8;;\033\\\n' "$_abs_outdir" "$_abs_outdir" >&2
+  # Endpoints
+  printf '  \033[1;36mEndpoints:\033[0m  \033]8;;file://%s/all_endpoints.txt\033\\\033[4m%s/all_endpoints.txt\033[0m\033]8;;\033\\\n' "$_abs_outdir" "$_abs_outdir" >&2
+  # Request log (OSCP)
+  if [[ -f "${_abs_outdir}/requests.log" ]] && [[ -s "${_abs_outdir}/requests.log" ]]; then
+    printf '  \033[2mReq log:\033[0m    \033]8;;file://%s/requests.log\033\\\033[4m%s/requests.log\033[0m\033]8;;\033\\\n' "$_abs_outdir" "$_abs_outdir" >&2
+  fi
+  # Scan output dir
+  printf '\n  \033[2mAll output:\033[0m \033]8;;file://%s\033\\\033[4m%s/\033[0m\033]8;;\033\\\n' "$_abs_outdir" "$_abs_outdir" >&2
   printf '\033[2m  ──────────────────────────────────────────────────────────────\033[0m\n' >&2
 
   _json_event "scan_complete" "{\"duration\":$duration,\"findings\":$total_findings,\"secrets\":$total_secrets}"
