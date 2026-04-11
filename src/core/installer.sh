@@ -81,13 +81,17 @@ tool_install() {
 
 # ── Detect OS & Package Manager ─────────────────────────────────────────────
 detect_os() {
+  # Skip sudo prefix when already running as root
+  local SUDO_PREFIX="sudo"
+  [[ "$EUID" -eq 0 ]] && SUDO_PREFIX=""
+
   if [ -f /etc/os-release ]; then
     . /etc/os-release
     case "$ID" in
-      kali|ubuntu|debian|pop) PKG="apt-get"; PKG_INSTALL="sudo $PKG install -y" ;;
-      arch|manjaro)           PKG="pacman";  PKG_INSTALL="sudo $PKG -S --noconfirm" ;;
-      fedora)                 PKG="dnf";     PKG_INSTALL="sudo $PKG install -y" ;;
-      *) warn "Unknown distro: $ID, trying apt"; PKG="apt-get"; PKG_INSTALL="sudo $PKG install -y" ;;
+      kali|ubuntu|debian|pop) PKG="apt-get"; PKG_INSTALL="$SUDO_PREFIX $PKG install -y" ;;
+      arch|manjaro)           PKG="pacman";  PKG_INSTALL="$SUDO_PREFIX $PKG -S --noconfirm" ;;
+      fedora)                 PKG="dnf";     PKG_INSTALL="$SUDO_PREFIX $PKG install -y" ;;
+      *) warn "Unknown distro: $ID, trying apt"; PKG="apt-get"; PKG_INSTALL="$SUDO_PREFIX $PKG install -y" ;;
     esac
     log "[*] OS: $PRETTY_NAME | Pkg: $PKG"
   elif [[ "$(uname)" == "Darwin" ]]; then
@@ -95,7 +99,7 @@ detect_os() {
     log "[*] OS: macOS $(sw_vers -productVersion) | Pkg: brew"
   else
     warn "Could not detect OS, defaulting to apt"
-    PKG="apt-get"; PKG_INSTALL="sudo $PKG install -y"
+    PKG="apt-get"; PKG_INSTALL="$SUDO_PREFIX $PKG install -y"
   fi
 }
 
@@ -562,6 +566,14 @@ main() {
     warn "If you normally run as a non-root user, run the installer as that user instead."
     warn "Continuing in 3 seconds... (Ctrl+C to abort)"
     sleep 3
+  else
+    # Cache sudo credentials upfront so later redirected commands don't
+    # swallow the password prompt. This asks for the password once here
+    # (interactively) and caches it for subsequent sudo calls.
+    log "[*] Requesting sudo access (needed for package installs)..."
+    if ! sudo -v 2>/dev/null; then
+      warn "Could not obtain sudo access. Package installs may fail."
+    fi
   fi
 
   detect_os
