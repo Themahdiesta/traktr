@@ -92,7 +92,7 @@ retry() {
 # ═══════════════════════════════════════════════════════════════════════════
 url_encode() {
   local string="$1"
-  python3 -c "import urllib.parse; print(urllib.parse.quote('$string', safe=''))" 2>/dev/null || \
+  python3 -c "import sys,urllib.parse; print(urllib.parse.quote(sys.argv[1], safe=''))" "$string" 2>/dev/null || \
     printf '%s' "$string" | while IFS= read -r -n1 char; do
       case "$char" in
         [a-zA-Z0-9.~_-]) printf '%s' "$char" ;;
@@ -103,7 +103,7 @@ url_encode() {
 
 url_decode() {
   local string="$1"
-  python3 -c "import urllib.parse; print(urllib.parse.unquote('$string'))" 2>/dev/null || \
+  python3 -c "import sys,urllib.parse; print(urllib.parse.unquote(sys.argv[1]))" "$string" 2>/dev/null || \
     printf '%b' "${string//%/\\x}"
 }
 

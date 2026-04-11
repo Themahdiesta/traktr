@@ -63,6 +63,7 @@ traktr https://target.com --scope ".*\.target\.com"
 | **Burp Request Import** | `traktr -r request.txt` -- zero-config authenticated scanning with full header replay |
 | **Deep Parameter Mining** | 6 sources: HTML forms, hidden fields, JS analysis, Arjun brute, GAU historical, Burp |
 | **Smart LFI Engine** | 6-level escalation, multi-signal validation, WAF bypass chains, depth auto-discovery |
+| **RCE Escalation Engine** | 7-chain auto-exploitation: upload+include, PHP wrappers, log poison, session poison, environ, upload progress race, SQLi file write. Dynamic bypass detection (double-encode, str_replace), HTML form discovery, PHP source analysis, post-exploitation enumeration |
 | **Secret Scanner** | 24+ regex patterns: AWS keys, JWTs, API tokens, private keys, internal URLs |
 | **Framework Detection** | 20+ fingerprints: PHP, Laravel, WordPress, Django, Spring, Express, ASP.NET, Next.js... |
 | **WAF-Adaptive** | Auto-detects WAF, selects evasion payloads, exponential backoff on blocks |
@@ -84,6 +85,7 @@ traktr <target>
   [Step 4] Params ------- 6-source param mining (parallel)
   [Step 4.5] Secrets ---- JS/HTML/error page scanning
   [Step 5] Vuln Test ---- Nuclei + LFI engine + Dalfox + Commix
+  [Step 5.5] RCE ------- 7-chain escalation (upload+include, wrappers, log/session poison...)
   [Step 6] Report ------- MD + HTML + JSON + PoC commands
 ```
 
@@ -182,12 +184,14 @@ src/core/
 src/intel/
   brain.sh            # Framework detection, payload selection
   lfi_engine.sh       # 6-level LFI escalation engine
+  rce_engine.sh       # 7-chain RCE escalation engine
   param_miner.sh      # Multi-source parameter discovery
   secret_scanner.sh   # Regex-based secret detection
 src/utils/
   scope_guard.sh      # Scope enforcement + ban detection
   helpers.sh          # Logging, encoding, retry, UA rotation
   reporter.sh         # HTML report generator
+  spinner.sh          # Terminal spinner animations
 config/
   traktr.json         # Default configuration
 payloads/             # Organized by vuln type

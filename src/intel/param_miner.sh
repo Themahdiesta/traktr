@@ -39,11 +39,11 @@ mine_params() {
     (
       : > "${outdir}/params_arjun.txt"
       # Prioritize pages with extensions (.php, .asp, .jsp) or query strings
-      # These are real endpoints, not directory brute-force noise
+      # Skip static files (css, js, images, fonts) — they never have params
       {
         grep -iE '\.(php|asp|aspx|jsp|do|action|cgi|pl)(\?|$)' "$endpoints_file" 2>/dev/null
         grep '\?' "$endpoints_file" 2>/dev/null | sed 's/\?.*//'
-        head -10 "$endpoints_file"
+        grep -viE '\.(css|js|png|jpg|jpeg|gif|svg|ico|woff2?|ttf|eot|map|pdf|zip|tar|gz)(\?|$)' "$endpoints_file" 2>/dev/null | head -10
       } | sort -u | head -20 | while IFS= read -r url; do
         local tmpout; tmpout=$(mktemp)
         timeout 60 arjun -u "$url" -t 10 --stable -oT "$tmpout" >/dev/null 2>&1 || true

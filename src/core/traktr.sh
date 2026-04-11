@@ -29,7 +29,7 @@ source "${TRAKTR_ROOT}/src/core/request_parser.sh"
 source "${TRAKTR_ROOT}/src/intel/brain.sh"
 # Phase 3 modules (sourced when available, graceful skip if still placeholder)
 # shellcheck disable=SC1090
-for _mod in lfi_engine param_miner secret_scanner; do
+for _mod in lfi_engine param_miner secret_scanner rce_engine; do
   [[ -f "${TRAKTR_ROOT}/src/intel/${_mod}.sh" ]] && source "${TRAKTR_ROOT}/src/intel/${_mod}.sh" 2>/dev/null || true
 done
 # shellcheck disable=SC1090
@@ -174,7 +174,7 @@ _curl() {
   fi
 
   _log_request "$url" "curl ${args[*]}"
-  curl "${args[@]}" "$@" "$url" 2>/dev/null
+  curl "${args[@]}" "$@" "$url" < /dev/null 2>/dev/null
 }
 
 # ── Banner ──────────────────────────────────────────────────────────────────
@@ -829,7 +829,7 @@ step4_params() {
   if declare -f mine_params &>/dev/null; then
     ( mine_params "${OUTDIR}/probed_urls.txt" "$OUTDIR" || true ) &
     local mp_pid=$!
-    local mp_deadline=$(( $(date +%s) + 240 ))
+    local mp_deadline=$(( $(date +%s) + 600 ))  # 10-min for thorough param mining
     local _last_param_count=0
     while kill -0 "$mp_pid" 2>/dev/null; do
       if [[ $(date +%s) -ge $mp_deadline ]]; then
@@ -1314,7 +1314,7 @@ step5_vuln_test() {
       while IFS='|' read -r url param _ method _; do
         [[ -z "$url" ]] || [[ -z "$param" ]] && continue
         for payload in "${payloads[@]}"; do
-          local encoded; encoded=$(python3 -c "import urllib.parse;print(urllib.parse.quote('$payload'))" 2>/dev/null || echo "$payload")
+          local encoded; encoded=$(python3 -c "import sys,urllib.parse;print(urllib.parse.quote(sys.argv[1]))" "$payload" 2>/dev/null || echo "$payload")
           local redir
           redir=$(_curl "${url}?${param}=${encoded}" -o /dev/null -w '%{redirect_url}' -L --max-redirs 1 2>/dev/null) || continue
           if echo "$redir" | grep -qi 'evil\.com'; then
@@ -1378,7 +1378,7 @@ step5_vuln_test() {
           for payload in "${ssrf_payloads[@]}"; do
             $found_ssrf && break
             local resp_file; resp_file=$(mktemp "${OUTDIR}/ssrf_resp_XXXXX")
-            local encoded; encoded=$(python3 -c "import urllib.parse;print(urllib.parse.quote('$payload'))" 2>/dev/null || echo "$payload")
+            local encoded; encoded=$(python3 -c "import sys,urllib.parse;print(urllib.parse.quote(sys.argv[1]))" "$payload" 2>/dev/null || echo "$payload")
             _curl "${base_url}?${param}=${encoded}" -o "$resp_file" 2>/dev/null || { rm -f "$resp_file"; continue; }
             local resp_size; resp_size=$(wc -c < "$resp_file" 2>/dev/null || echo 0)
             local resp_md5; resp_md5=$(md5sum "$resp_file" 2>/dev/null | cut -d' ' -f1)
@@ -1400,7 +1400,7 @@ step5_vuln_test() {
             for payload in "${ssrf_meta_payloads[@]}"; do
               $found_ssrf && break
               local resp_file; resp_file=$(mktemp "${OUTDIR}/ssrf_meta_XXXXX")
-              local encoded; encoded=$(python3 -c "import urllib.parse;print(urllib.parse.quote('$payload'))" 2>/dev/null || echo "$payload")
+              local encoded; encoded=$(python3 -c "import sys,urllib.parse;print(urllib.parse.quote(sys.argv[1]))" "$payload" 2>/dev/null || echo "$payload")
               _curl "${base_url}?${param}=${encoded}" -o "$resp_file" 2>/dev/null || { rm -f "$resp_file"; continue; }
               local resp_size; resp_size=$(wc -c < "$resp_file" 2>/dev/null || echo 0)
               local resp_md5; resp_md5=$(md5sum "$resp_file" 2>/dev/null | cut -d' ' -f1)
@@ -1491,18 +1491,18 @@ step5_vuln_test() {
     pids+=($!)
   fi
 
-  # Wait for all scanners with master deadline (5 minutes max)
-  local vuln_deadline=$(( $(date +%s) + 300 ))
-  _log "  Waiting for ${#pids[@]} vuln scanners (max 5 min)..."
+  # Wait for all scanners (no hard deadline — let them finish for thorough analysis)
+  local vuln_deadline=$(( $(date +%s) + 900 ))  # 15-min safety net
+  _log "  Waiting for ${#pids[@]} vuln scanners..."
   _spin "Running ${#pids[@]} scanners in parallel (nuclei, LFI, XSS, SQLi, SSRF, commix)..."
   for pid in "${pids[@]}"; do
     while kill -0 "$pid" 2>/dev/null; do
       if [[ $(date +%s) -ge $vuln_deadline ]]; then
-        _debug "Vuln deadline reached, killing remaining scanners"
+        _debug "Safety deadline reached, killing remaining scanners"
         for kpid in "${pids[@]}"; do _kill_tree_hard "$kpid"; done
         break 2
       fi
-      sleep 1
+      sleep 2
     done
     wait "$pid" 2>/dev/null || true
   done
@@ -1511,6 +1511,54 @@ step5_vuln_test() {
   # ── MERGE FINDINGS ──
   _merge_findings
   _save_state "vulntest"
+}
+
+# ═══════════════════════════════════════════════════════════════════════════
+#  STEP 5.5: RCE ESCALATION — Chain vulns for Remote Code Execution
+# ═══════════════════════════════════════════════════════════════════════════
+step5_5_rce_escalation() {
+  _log "[*] STEP 5.5: RCE Escalation Engine"
+
+  # Only run if we have LFI or SQLi findings to chain
+  local has_lfi=false has_sqli=false has_upload=false
+  [[ -f "${OUTDIR}/vuln/lfi.json" ]] && [[ -s "${OUTDIR}/vuln/lfi.json" ]] && has_lfi=true
+  [[ -f "${OUTDIR}/vuln/sqli.json" ]] && [[ -s "${OUTDIR}/vuln/sqli.json" ]] && has_sqli=true
+
+  # Check if we discovered upload forms during crawl/param discovery
+  if grep -qiE 'type.*file|upload|multipart|enctype' "${OUTDIR}/all_endpoints.txt" "${OUTDIR}/active_params.txt" 2>/dev/null; then
+    has_upload=true
+  fi
+  # Also check HTML sources for file upload forms
+  if find "${OUTDIR}" -name '*.html' -o -name 'crawl_*.txt' 2>/dev/null | \
+     xargs grep -liqE 'type\s*=\s*["\x27]file["\x27]|enctype\s*=\s*["\x27]multipart' 2>/dev/null; then
+    has_upload=true
+  fi
+
+  if ! $has_lfi && ! $has_sqli; then
+    _log "  No LFI/SQLi findings to chain — skipping RCE escalation"
+    return
+  fi
+
+  _log "  LFI=$has_lfi | SQLi=$has_sqli | Upload forms=$has_upload"
+
+  if declare -f rce_escalate &>/dev/null; then
+    : > "${OUTDIR}/vuln/rce.json"
+    rce_escalate "$OUTDIR"
+
+    # Merge RCE findings into main findings
+    if [[ -f "${OUTDIR}/vuln/rce.json" ]] && [[ -s "${OUTDIR}/vuln/rce.json" ]]; then
+      local rce_count
+      rce_count=$(wc -l < "${OUTDIR}/vuln/rce.json" 2>/dev/null || echo 0)
+      if [[ "$rce_count" -gt 0 ]]; then
+        _ok "RCE findings: $rce_count — re-merging all findings"
+        _merge_findings
+      fi
+    fi
+  else
+    _warn "RCE engine not available (src/intel/rce_engine.sh missing)"
+  fi
+
+  _save_state "rce"
 }
 
 # ── Basic LFI test (inline fallback until Phase 3 lfi_engine.sh) ──────────
@@ -1535,7 +1583,7 @@ _lfi_basic_test() {
     [[ -z "$baseline_size" ]] && baseline_size=0
 
     for payload in "${payloads[@]}"; do
-      local encoded; encoded=$(python3 -c "import urllib.parse;print(urllib.parse.quote('$payload',safe=''))" 2>/dev/null || echo "$payload")
+      local encoded; encoded=$(python3 -c "import sys,urllib.parse;print(urllib.parse.quote(sys.argv[1],safe=''))" "$payload" 2>/dev/null || echo "$payload")
       local test_url="${url}?${param}=${encoded}"
       local tmpfile; tmpfile=$(mktemp)
       local resp_code
@@ -1624,6 +1672,10 @@ _merge_findings() {
   # SQLi
   [[ -f "${OUTDIR}/vuln/sqli.json" ]] && [[ -s "${OUTDIR}/vuln/sqli.json" ]] && \
     cat "${OUTDIR}/vuln/sqli.json" >> "$tmpmerge" 2>/dev/null || true
+
+  # RCE chain findings
+  [[ -f "${OUTDIR}/vuln/rce.json" ]] && [[ -s "${OUTDIR}/vuln/rce.json" ]] && \
+    cat "${OUTDIR}/vuln/rce.json" >> "$tmpmerge" 2>/dev/null || true
 
   # Commix (command injection)
   if [[ -d "${OUTDIR}/vuln/commix_out" ]]; then
@@ -1908,6 +1960,7 @@ main() {
     "{\"target\":\"${TARGET}\",\"outdir\":\"${OUTDIR}\",\"params_count\":$(wc -l < "${OUTDIR}/active_params.txt" 2>/dev/null || echo 0)}" || true
 
   step5_vuln_test
+  step5_5_rce_escalation
   step6_report
 }
 
