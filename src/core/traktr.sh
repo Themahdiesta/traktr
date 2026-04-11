@@ -1541,8 +1541,8 @@ step5_5_rce_escalation() {
     has_upload=true
   fi
   # Also check HTML sources for file upload forms
-  if find "${OUTDIR}" -name '*.html' -o -name 'crawl_*.txt' 2>/dev/null | \
-     xargs grep -liqE 'type\s*=\s*["\x27]file["\x27]|enctype\s*=\s*["\x27]multipart' 2>/dev/null; then
+  if find "${OUTDIR}" \( -name '*.html' -o -name 'crawl_*.txt' \) -print0 2>/dev/null | \
+     xargs -0 grep -liqE 'type\s*=\s*["\x27]file["\x27]|enctype\s*=\s*["\x27]multipart' 2>/dev/null; then
     has_upload=true
   fi
 
@@ -1875,9 +1875,9 @@ SUMEOF
 
     jq -r '.[] | "\(.confidence // "?")|\(.type // "unknown")|\(.url // .matched_at // "N/A")|\(.param // "-")|\(.proof // .detail // "")|\(.curl // "")"' \
       "$findings" 2>/dev/null | sort -t'|' -k1,1r | while IFS='|' read -r conf ftype furl fparam fproof fcurl; do
-        local color='\033[1;33m'; local icon="◆"
-        [[ "$conf" == "HIGH" ]] && color='\033[1;31m' && icon="●"
-        [[ "$conf" == "LOW" ]] && color='\033[2m' && icon="○"
+        local color='\033[1;33m'; local _icon="◆"
+        [[ "$conf" == "HIGH" ]] && color='\033[1;31m' && _icon="●"
+        [[ "$conf" == "LOW" ]] && color='\033[2m' && _icon="○"
         local short_url="${furl#http*://}"
         [[ ${#short_url} -gt 28 ]] && short_url="${short_url:0:25}..."
         printf "  │ ${color}%-8s\033[0m %-22s \033]8;;%s\033\\%-30s\033]8;;\033\\ %-10s\n" "[${conf}]" "$ftype" "$furl" "$short_url" "$fparam" >&2
@@ -1969,10 +1969,10 @@ SUMEOF
 
   # ── LFI Reads (if any) ──
   if [[ -d "${OUTDIR}/lfi_reads" ]] && [[ "$(ls -A "${OUTDIR}/lfi_reads" 2>/dev/null)" ]]; then
-    local lfi_file_count; lfi_file_count=$(ls -1 "${OUTDIR}/lfi_reads" 2>/dev/null | wc -l)
+    local lfi_file_count; lfi_file_count=$(find "${OUTDIR}/lfi_reads" -maxdepth 1 -type f 2>/dev/null | wc -l)
     printf '\n' >&2
     printf '  \033[1;33m┌─── LFI Extracted Files (%s) ──────────────────────────────\033[0m\n' "$lfi_file_count" >&2
-    ls -1 "${OUTDIR}/lfi_reads" 2>/dev/null | while IFS= read -r lf; do
+    find "${OUTDIR}/lfi_reads" -maxdepth 1 -type f -printf '%f\n' 2>/dev/null | while IFS= read -r lf; do
       local lf_size; lf_size=$(wc -c < "${OUTDIR}/lfi_reads/${lf}" 2>/dev/null || echo 0)
       local lf_name="${lf%.txt}"
       lf_name="${lf_name//_//}"

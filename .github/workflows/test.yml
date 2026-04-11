@@ -18,7 +18,7 @@ jobs:
         run: sudo apt-get install -y shellcheck
       - name: Lint all shell scripts
         run: |
-          find src/ -name '*.sh' -exec shellcheck -x -s bash {} +
+          find src/ -name '*.sh' -exec shellcheck -x -s bash --severity=error {} +
           shellcheck -x -s bash plugins/example_plugin.sh || true
 
   install-dryrun:

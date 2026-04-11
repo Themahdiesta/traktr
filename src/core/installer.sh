@@ -113,9 +113,9 @@ install_system_deps() {
   log "  [~] Updating package index..."
   run_cmd "$SUDO_PREFIX apt-get update -qq" || warn "apt-get update failed (continuing anyway)"
 
-  for dep in jq curl git wget chromium python3 pip; do
+  for dep in jq curl git wget chromium python3 python3-pip; do
     local check="$dep"
-    [[ "$dep" == "pip" ]] && check="pip3"
+    [[ "$dep" == "python3-pip" ]] && check="pip3"
     [[ "$dep" == "chromium" ]] && { has_tool chromium-browser && check="chromium-browser" || check="chromium"; }
     if has_tool "$check" && ! $REPAIR; then
       ok "$dep present"; ((SKIPPED++)) || true
@@ -260,11 +260,22 @@ install_pip_tools() {
   # feroxbuster (Rust-based recursive dir scanner, available in Kali repos)
   if ! has_tool feroxbuster; then
     log "  [~] Installing feroxbuster..."
-    if run_cmd "$PKG_INSTALL feroxbuster"; then
+    if run_cmd "$PKG_INSTALL feroxbuster 2>/dev/null"; then
       ok "feroxbuster installed"
       ((INSTALLED++)) || true
     else
-      warn "feroxbuster not available in repos (optional)"
+      # Fallback: install from GitHub releases
+      local fb_ver="2.10.4"
+      local fb_url="https://github.com/epi052/feroxbuster/releases/download/v${fb_ver}/feroxbuster_amd64.deb"
+      log "  [~] Installing feroxbuster from GitHub..."
+      if retry 2 wget -q -O /tmp/feroxbuster.deb "$fb_url" && \
+         run_cmd "$SUDO_PREFIX dpkg -i /tmp/feroxbuster.deb"; then
+        ok "feroxbuster installed (GitHub release)"
+        ((INSTALLED++)) || true
+      else
+        warn "feroxbuster install failed (optional)"
+      fi
+      rm -f /tmp/feroxbuster.deb
     fi
   else
     ok "feroxbuster already installed ($(which feroxbuster))"
@@ -330,7 +341,7 @@ organize_payloads() {
 
   # SQLi
   link_if_exists "$patt/SQL Injection/Intruder" "$dst/sqli/patt_sqli"
-  link_if_exists "$sec/Fuzzing/SQLi" "$dst/sqli/seclists_sqli"
+  link_if_exists "$sec/Fuzzing/Databases/SQLi" "$dst/sqli/seclists_sqli"
 
   # XSS
   link_if_exists "$patt/XSS Injection" "$dst/xss/patt_xss"
@@ -547,12 +558,15 @@ verify_all() {
         case "$t" in
           ffuf)     ffuf -V 2>&1 ;;
           httpx)    httpx -version 2>&1 || dpkg -s httpx-toolkit 2>&1 | grep Version ;;
-          katana|nuclei|subfinder|dalfox) "$t" -version 2>&1 ;;
+          katana|nuclei|subfinder) "$t" -version 2>&1 ;;
+          dalfox)                  dalfox version 2>&1 ;;
           arjun)    pip3 show arjun 2>&1 | grep -i version ;;
           commix)   commix --version 2>&1 ;;
           jq)       jq --version 2>&1 ;;
           curl)     curl --version 2>&1 | head -1 ;;
           git)      git --version 2>&1 ;;
+          gau)      gau --version 2>&1 ;;
+          waybackurls) echo "no version flag" ;;
           *)        echo "installed" ;;
         esac | grep -oP '[0-9]+\.[0-9]+(\.[0-9]+)?' | head -1
       ) || ver="?"
@@ -683,6 +697,15 @@ main() {
   $REPAIR  && log "[*] REPAIR MODE: Reinstalling broken tools"
   $UPGRADE && log "[*] UPGRADE MODE: Updating all tools"
   log ""
+
+  # ── TTY / non-interactive guard ──────────────────────────────────────
+  if [[ ! -t 0 ]] && [[ "$EUID" -ne 0 ]]; then
+    warn "No TTY detected (piped shell) and not running as root."
+    warn "sudo prompts will be silently swallowed — apt installs WILL fail."
+    warn "Run interactively instead:"
+    warn "  git clone https://github.com/Themahdiesta/traktr.git && cd traktr && ./install.sh"
+    exit 1
+  fi
 
   # ── Root guard ──────────────────────────────────────────────────────────
   # Running as root causes ~/go to be /root/go, Go tools won't be in the
