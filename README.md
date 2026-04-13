@@ -6,22 +6,43 @@ Traktr is a bash-based web application penetration testing framework that orches
 
 ## Installation
 
-### One-liner (Kali root / sudo cached)
+### Method comparison
+
+| Method | Kali | Ubuntu/Debian | Arch | Fedora | macOS | Any OS |
+|--------|:----:|:-------------:|:----:|:------:|:-----:|:------:|
+| One-liner (root) | ✓ | ✓ (as root) | ✓ (as root) | ✓ (as root) | ✓ (as root) | — |
+| Git clone | ✓ | ✓ | ✓ | ✓ | ✓ (brew required) | — |
+| Docker | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+
+### One-liner (root only)
 
 ```bash
 curl -sL https://raw.githubusercontent.com/Themahdiesta/traktr/main/install.sh | bash
 ```
 
-> **Note:** This requires running as root (Kali default) or having `sudo` credentials
-> already cached. If you get sudo errors, use the git clone method below instead.
+> **Note:** The piped `curl | bash` invocation has no interactive TTY, so the installer
+> requires **root** to proceed safely (sudo prompts would be silently swallowed in a pipe).
+> If you see `No TTY detected` or are not running as root, use the **git clone method** below.
 
-### Git clone (recommended)
+### Git clone (recommended for all platforms)
 
 ```bash
 git clone https://github.com/Themahdiesta/traktr.git
 cd traktr
-chmod +x install.sh
-./install.sh
+./install.sh          # Prompts for sudo password once; installs all tools
+```
+
+Verify what will be installed without making any changes:
+
+```bash
+./install.sh --dry-run
+```
+
+Check tool health after install:
+
+```bash
+./install.sh --check
+# or: traktr --check
 ```
 
 ### Manual
@@ -34,7 +55,9 @@ chmod +x src/core/traktr.sh src/core/installer.sh
 ln -sf "$(pwd)/src/core/traktr.sh" ~/.local/bin/traktr
 ```
 
-### Docker
+### Docker (any platform — macOS, Windows, Linux)
+
+The Docker image is self-contained (Debian bookworm base) and works on any machine with Docker installed — no distro requirements.
 
 ```bash
 docker build -t traktr .
@@ -44,10 +67,11 @@ docker run --rm -v $(pwd)/results:/output traktr https://target.com -o /output
 
 ### Requirements
 
-- **OS**: Kali Linux (recommended), Ubuntu/Debian, Arch, Fedora, macOS
+- **OS**: Kali Linux (recommended), Ubuntu 22.04+, Debian bookworm+, Arch, Fedora, macOS (with Homebrew)
 - **Shell**: Bash 4.0+
 - **Disk**: ~2 GB (for payload repositories)
-- Tools auto-installed: katana, ffuf, nuclei, httpx, gau, subfinder, waybackurls, dalfox, arjun, commix
+- **Go**: 1.21+ (auto-installed if missing)
+- Tools auto-installed: katana, ffuf, nuclei, httpx, gau, subfinder, waybackurls, dalfox, arjun, commix, feroxbuster
 
 ## Quick Start
 
