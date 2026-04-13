@@ -13,7 +13,7 @@ RUN go install github.com/projectdiscovery/katana/cmd/katana@latest && \
     go install github.com/lc/gau/v2/cmd/gau@latest
 
 # ── Stage 2: Runtime ───────────────────────────────────────────────────
-FROM kalilinux/kali-rolling AS runtime
+FROM debian:bookworm-slim AS runtime
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV PATH="/root/go/bin:/usr/local/go/bin:${PATH}"
