@@ -5,12 +5,12 @@
 # ── Stage 1: Go tool builder ────────────────────────────────────────────
 FROM golang:1.22-bookworm AS go-builder
 
-RUN go install github.com/projectdiscovery/katana/cmd/katana@latest && \
-    go install github.com/projectdiscovery/httpx/cmd/httpx@latest && \
-    go install github.com/projectdiscovery/nuclei/v3/cmd/nuclei@latest && \
-    go install github.com/tomnomnom/waybackurls@latest && \
-    go install github.com/ffuf/ffuf/v2@latest && \
-    go install github.com/lc/gau/v2/cmd/gau@latest
+RUN go install github.com/projectdiscovery/katana/cmd/katana@v1.1.0 && \
+    go install github.com/projectdiscovery/httpx/cmd/httpx@v1.6.9 && \
+    go install github.com/projectdiscovery/nuclei/v3/cmd/nuclei@v3.3.7 && \
+    go install github.com/tomnomnom/waybackurls@v0.1.0 && \
+    go install github.com/ffuf/ffuf/v2@v2.1.0 && \
+    go install github.com/lc/gau/v2/cmd/gau@v2.2.3
 
 # ── Stage 2: Runtime ───────────────────────────────────────────────────
 FROM debian:bookworm-slim AS runtime
