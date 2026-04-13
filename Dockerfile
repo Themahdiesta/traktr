@@ -21,7 +21,7 @@ ENV PATH="/root/go/bin:/usr/local/go/bin:${PATH}"
 # System deps
 RUN apt-get update && apt-get install -y --no-install-recommends \
     bash curl wget jq python3 python3-pip \
-    nmap nikto whatweb git xxd bc gawk \
+    nmap whatweb git xxd bc gawk \
     chromium chromium-driver \
     && rm -rf /var/lib/apt/lists/*
 

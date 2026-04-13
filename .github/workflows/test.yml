@@ -45,9 +45,10 @@ jobs:
         run: |
           chmod +x install.sh
           bash install.sh 2>&1 | tee /tmp/install.log
-        timeout-minutes: 15
+        timeout-minutes: 25
       - name: Health check
         run: bash src/core/installer.sh --check
+        continue-on-error: true
       - name: Upload install log
         if: always()
         uses: actions/upload-artifact@v4

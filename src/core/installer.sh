@@ -699,8 +699,9 @@ main() {
   log ""
 
   # ── TTY / non-interactive guard ──────────────────────────────────────
-  # Skip this guard in dry-run mode — no sudo calls are made so no TTY needed.
-  if [[ ! -t 0 ]] && [[ "$EUID" -ne 0 ]] && ! $DRY_RUN; then
+  # Skip this guard in dry-run mode (no sudo needed) and in CI environments
+  # (GitHub Actions sets CI=true and has passwordless sudo, so no TTY needed).
+  if [[ ! -t 0 ]] && [[ "$EUID" -ne 0 ]] && ! $DRY_RUN && [[ "${CI:-}" != "true" ]]; then
     warn "No TTY detected (piped shell) and not running as root."
     warn "sudo prompts will be silently swallowed — apt installs WILL fail."
     warn "Run interactively instead:"
