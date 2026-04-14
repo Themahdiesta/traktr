@@ -342,9 +342,10 @@ USAGE
 # ═══════════════════════════════════════════════════════════════════════════
 # ── Login replay: execute a login POST and capture authenticated session cookies ──
 _replay_login() {
-  # Only trigger for POST requests to login-like endpoints
-  [[ "$BURP_METHOD" != "POST" ]] && return || true
-  echo "$BURP_PATH" | grep -qiP '(login|signin|sign.in|authenticate|auth|session|token)' || return || true
+  # Only trigger for POST requests to login-like endpoints (not API calls with existing auth)
+  if [[ "$BURP_METHOD" != "POST" ]]; then return 0; fi
+  if [[ "$BURP_AUTH_TYPE" == "bearer" ]]; then return 0; fi  # already authenticated via JWT
+  if ! echo "$BURP_PATH" | grep -qiP '(login|signin|sign.in|authenticate|auth/token)'; then return 0; fi
 
   _log "  [*] Login endpoint detected — replaying to capture auth session..."
 
@@ -408,7 +409,7 @@ step0_init() {
       TARGET="${_burp_proto}://${BURP_HOST}"
     fi
     # Auto-replay login if request targets a login endpoint; captures auth session cookies
-    _replay_login
+    _replay_login || true
   fi
 
   [[ -z "$TARGET" ]] && _die "No target specified. Use: traktr <url> or traktr -r request.txt"
