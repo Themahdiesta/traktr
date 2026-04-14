@@ -340,6 +340,56 @@ USAGE
 }
 
 # ═══════════════════════════════════════════════════════════════════════════
+# ── Login replay: execute a login POST and capture authenticated session cookies ──
+_replay_login() {
+  # Only trigger for POST requests to login-like endpoints
+  [[ "$BURP_METHOD" != "POST" ]] && return || true
+  echo "$BURP_PATH" | grep -qiP '(login|signin|sign.in|authenticate|auth|session|token)' || return || true
+
+  _log "  [*] Login endpoint detected — replaying to capture auth session..."
+
+  # Build curl args from the parsed Burp headers
+  local login_args=(-sk -X POST --max-time 15 -D -)
+  for hdr in "${!BURP_HEADERS[@]}"; do
+    [[ "$hdr" == "Host" ]] && continue
+    [[ "$hdr" == "Content-Length" ]] && continue
+    login_args+=(-H "${hdr}: ${BURP_HEADERS[$hdr]}")
+  done
+  [[ -n "$BURP_BODY" ]] && login_args+=(-d "$BURP_BODY")
+
+  # Execute the login request; -D - dumps response headers to stdout
+  local resp
+  resp=$(curl "${login_args[@]}" "$BURP_TARGET" 2>/dev/null) || {
+    _warn "Login replay: connection failed, proceeding with request file cookies"
+    return
+  }
+
+  local status; status=$(echo "$resp" | head -1 | grep -oP '\d{3}' | head -1)
+
+  if [[ "$status" =~ ^(200|201|302|303)$ ]]; then
+    # Collect all Set-Cookie name=value pairs from the response headers
+    local auth_cookies=""
+    while IFS= read -r line; do
+      if echo "$line" | grep -qi '^set-cookie:'; then
+        local cv; cv=$(echo "$line" | sed 's/^[Ss]et-[Cc]ookie:[[:space:]]*//' | cut -d';' -f1 | tr -d '\r')
+        [[ -n "$cv" ]] && { [[ -n "$auth_cookies" ]] && auth_cookies+="; "; auth_cookies+="$cv"; }
+      fi
+    done <<< "$resp"
+
+    if [[ -n "$auth_cookies" ]]; then
+      _ok "Login successful (HTTP $status) — authenticated session cookies captured"
+      # Override pre-auth cookies with the authenticated session everywhere
+      BURP_HEADERS["Cookie"]="$auth_cookies"
+      CUSTOM_COOKIES="$auth_cookies"
+    else
+      _ok "Login successful (HTTP $status) — no Set-Cookie in response, using request file cookies"
+    fi
+  else
+    _warn "Login replay returned HTTP ${status:-???} — proceeding with request file cookies"
+  fi
+}
+
+# ═══════════════════════════════════════════════════════════════════════════
 #  STEP 0: INITIALIZATION
 # ═══════════════════════════════════════════════════════════════════════════
 step0_init() {
@@ -352,7 +402,13 @@ step0_init() {
     else
       parse_burp_request "$REQUEST_FILE"
     fi
-    [[ -z "$TARGET" ]] && TARGET="$BURP_TARGET"
+    # Use origin (scheme://host) as target — not the full path (e.g. /api/Account/Login)
+    if [[ -z "$TARGET" ]]; then
+      local _burp_proto="${BURP_TARGET%%://*}"
+      TARGET="${_burp_proto}://${BURP_HOST}"
+    fi
+    # Auto-replay login if request targets a login endpoint; captures auth session cookies
+    _replay_login
   fi
 
   [[ -z "$TARGET" ]] && _die "No target specified. Use: traktr <url> or traktr -r request.txt"

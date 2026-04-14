@@ -39,7 +39,7 @@ parse_burp_request() {
   sed 's/\r$//' "$file" > "$clean_file"
 
   while IFS= read -r line || [[ -n "$line" ]]; do
-    ((line_num++))
+    (( ++line_num ))
 
     # Line 1: Request line (METHOD PATH HTTP/x.x)
     if [[ $line_num -eq 1 ]]; then
